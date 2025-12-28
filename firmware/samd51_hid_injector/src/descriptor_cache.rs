@@ -92,34 +92,6 @@ impl DescriptorCache {
         }
     }
 
-    /// Get raw descriptor bytes
-    pub fn get_raw(&self, device_address: u8, interface_num: u8) -> Option<&[u8]> {
-        self.entries.iter()
-            .find(|e| e.device_address == device_address && e.interface_num == interface_num)
-            .map(|e| e.raw_descriptor.as_slice())
-    }
-
-    /// Remove descriptor from cache
-    pub fn remove(&mut self, device_address: u8, interface_num: u8) -> bool {
-        if let Some(pos) = self.entries.iter()
-            .position(|e| e.device_address == device_address && e.interface_num == interface_num) {
-            self.entries.remove(pos);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Clear all cached descriptors
-    pub fn clear(&mut self) {
-        self.entries.clear();
-    }
-
-    /// Get number of cached descriptors
-    pub fn count(&self) -> usize {
-        self.entries.len()
-    }
-
     /// Check if cache is empty
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()

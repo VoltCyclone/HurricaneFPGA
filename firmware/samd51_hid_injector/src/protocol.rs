@@ -49,10 +49,10 @@ impl Command {
         // Length
         frame[idx..idx+5].copy_from_slice(b"[LEN:");
         idx += 5;
-        frame[idx] = hex_digit((self.length as u8) >> 12);
-        frame[idx+1] = hex_digit(((self.length as u8) >> 8) & 0x0F);
-        frame[idx+2] = hex_digit(((self.length as u8) >> 4) & 0x0F);
-        frame[idx+3] = hex_digit((self.length as u8) & 0x0F);
+        frame[idx] = hex_digit((self.length >> 12) as u8);
+        frame[idx+1] = hex_digit(((self.length >> 8) & 0x0F) as u8);
+        frame[idx+2] = hex_digit(((self.length >> 4) & 0x0F) as u8);
+        frame[idx+3] = hex_digit((self.length & 0x0F) as u8);
         idx += 4;
         frame[idx..idx+2].copy_from_slice(b"] ");
         idx += 2;

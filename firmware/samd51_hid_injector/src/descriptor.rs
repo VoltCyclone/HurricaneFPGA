@@ -106,19 +106,6 @@ impl HidDescriptor {
             is_gamepad: false,
         }
     }
-
-    /// Get the size of an input report by ID
-    pub fn get_input_report_size(&self, report_id: u8) -> Option<u16> {
-        self.input_report_sizes
-            .iter()
-            .find(|(id, _)| *id == report_id)
-            .map(|(_, size)| *size)
-    }
-
-    /// Find fields by usage (e.g., all button fields)
-    pub fn find_fields_by_usage_page(&self, page: UsagePage) -> impl Iterator<Item = &ReportField> {
-        self.fields.iter().filter(move |f| f.usage.page == page)
-    }
 }
 
 /// HID Descriptor Parser
@@ -338,11 +325,6 @@ impl DescriptorParser {
                 _ => {}
             }
         }
-    }
-
-    /// Get the parsed descriptor
-    pub fn descriptor(&self) -> &HidDescriptor {
-        &self.descriptor
     }
 
     /// Consume parser and return descriptor
