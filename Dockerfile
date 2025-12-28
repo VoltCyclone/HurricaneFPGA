@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.4
+
 # Use Python 3.11 slim as the base image
 FROM python:latest
 
@@ -29,10 +31,12 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
     rustup target add thumbv7em-none-eabihf
 
 # Upgrade pip in a separate layer (cached unless base image changes)
-RUN pip install --upgrade pip
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip
 
 # Install stable Python packages that rarely change (these will be cached)
-RUN pip install --no-cache-dir \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir \
     amaranth \
     amaranth-boards \
     pyserial \
@@ -44,12 +48,14 @@ RUN pip install --no-cache-dir \
     cynthion
 
 # Install yowasp packages separately (large downloads, benefit from caching)
-RUN pip install --no-cache-dir \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir \
     yowasp-yosys \
     yowasp-nextpnr-ecp5
 
 # Install luna from git (changes less frequently than local code)
-RUN pip install --no-cache-dir git+https://github.com/greatscottgadgets/luna.git
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir git+https://github.com/greatscottgadgets/luna.git
 
 # Set working directory before copying files
 WORKDIR /work
@@ -66,18 +72,26 @@ RUN mkdir -p legacy/src/frontend && \
 # Copy your project files into the container (this layer invalidates most often)
 COPY . /work
 
-# Build the PC CLI tool (native binary)
-RUN cargo build --release
+# Build the PC CLI tool (native binary) with cache mount for faster rebuilds
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/work/target \
+    cargo build --release && \
+    cp target/release/hurricanefpga /work/hurricanefpga
 
-# Build the SAMD51 firmware (ARM Cortex-M4)
-RUN cd firmware/samd51_hid_injector && \
-    cargo build --release --target thumbv7em-none-eabihf
+# Build the SAMD51 firmware (ARM Cortex-M4) with cache mount
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/work/firmware/samd51_hid_injector/target \
+    cd firmware/samd51_hid_injector && \
+    cargo build --release --target thumbv7em-none-eabihf && \
+    cp target/thumbv7em-none-eabihf/release/samd51_hid_injector /work/samd51_hid_injector
 
 # Create build output directory and copy all artifacts
 RUN mkdir -p /work/build/binaries /work/build/firmware && \
-    cp target/release/hurricanefpga /work/build/binaries/ && \
+    cp /work/hurricanefpga /work/build/binaries/ && \
     strip /work/build/binaries/hurricanefpga && \
-    cp firmware/samd51_hid_injector/target/thumbv7em-none-eabihf/release/samd51_hid_injector /work/build/firmware/ && \
+    cp /work/samd51_hid_injector /work/build/firmware/ && \
     arm-none-eabi-size /work/build/firmware/samd51_hid_injector > /work/build/firmware/size-info.txt 2>&1 || echo "arm-none-eabi-size not available" > /work/build/firmware/size-info.txt
 
 # Create a build info file

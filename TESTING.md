@@ -13,6 +13,14 @@ The project now includes extensive test coverage across multiple layers:
 ## Running Tests
 
 ### All Tests
+
+#### In Docker Container (Recommended)
+```bash
+make test
+```
+This will automatically build the Docker image if needed and run all tests.
+
+#### Locally
 ```bash
 make test-local
 # or
@@ -23,15 +31,25 @@ make test-local
 
 #### Rust Firmware Tests
 ```bash
+# Run locally
 make test-rust
-# or
-cd firmware/samd51_hid_injector && cargo test
+
+# Run in Docker
+make test-docker-rust
+
+# Run directly
+cd firmware/samd51_hid_injector && cargo test --lib
 ```
 
 #### Python Unit Tests
 ```bash
+# Run locally
 make test-python
-# or
+
+# Run in Docker
+make test-docker-python
+
+# Run directly
 python3 tools/test_descriptor_unit.py
 python3 tools/test_injection_unit.py
 ```

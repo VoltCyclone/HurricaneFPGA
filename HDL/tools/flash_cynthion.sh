@@ -17,7 +17,7 @@ DEFAULT_INTERFACE="ecpdap"  # Options: ecpdap, ecpprog, openocd
 DEFAULT_CABLE="ftdi"        # Default FTDI cable type
 VERBOSE=0                   # Verbose output (0=disabled, 1=enabled)
 FLASH_MODE="sram"           # Options: sram, flash
-VALIDATE_HDL=1              # Validate HDL before flashing (0=disabled, 1=enabled)
+VALIDATE_HDL=0              # Validate HDL before flashing (0=disabled, 1=enabled)
 # OpenOCD configuration for macOS
 OPENOCD_MAC_CONFIG_DIR="/opt/homebrew/share/openocd/scripts"  # Homebrew path for Apple Silicon
 if [ ! -d "$OPENOCD_MAC_CONFIG_DIR" ]; then
@@ -111,7 +111,7 @@ detect_devices() {
     status "Detecting connected Cynthion devices..."
     
     if [ "$INTERFACE" == "ecpdap" ]; then
-        ecpdap list
+        ecpdap probes
     elif [ "$INTERFACE" == "ecpprog" ]; then
         ecpprog -I
     elif [ "$INTERFACE" == "openocd" ]; then

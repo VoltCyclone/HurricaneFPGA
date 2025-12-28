@@ -75,15 +75,24 @@ See `HDL/USB_HOST_QUICKSTART.md` for a quick start guide!
 
 ### 1. Environment setup
 
-You only need Docker for the initial build now. We provide a Makefile for convenience:
+You only need Docker (with BuildKit support) for the initial build. We provide an optimized Makefile with layer caching for fast rebuilds:
 
 ```bash
-# Quick start - build everything
+# Quick start - build everything with caching
 make build
+
+# Fast rebuild using existing cache (much faster for incremental changes)
+make build-fast
 
 # Or manually with Docker
 docker build -t amaranth-cynthion .
 ```
+
+**Performance Tips:**
+- First build will take ~10-15 minutes as it downloads and compiles all dependencies
+- Subsequent builds with `make build-fast` typically complete in 1-2 minutes
+- BuildKit cache mounts speed up Cargo and pip operations significantly
+- The `.dockerignore` file ensures only necessary files are included in build context
 
 See `make help` for all available commands.
 
@@ -134,6 +143,33 @@ make run-rust
 The binary will be available at `build/binaries/hurricanefpga`.
 
 > **Note:** Docker now builds **both** the PC CLI tool and the SAMD51 embedded firmware using ARM cross-compilation. Both binaries are extracted to the `build/` directory. See `docs/RUST_PROJECTS.md` for details on the two Rust projects.
+
+### Build System & Cache Management
+
+The build system uses Docker BuildKit with aggressive caching for optimal rebuild times:
+
+```bash
+# Normal build (updates cache)
+make build                # Full build with cache update (~2 min after first build)
+
+# Fast incremental builds
+make build-fast           # Use cache but skip cache export (~1 min)
+make rebuild-fast         # Clean artifacts, keep cache, rebuild
+
+# Complete rebuilds
+make rebuild              # Clean everything including cache (~10-15 min)
+make clean-cache          # Remove only the Docker build cache
+```
+
+**Cache Storage:**
+- Layer cache: `/tmp/docker-cache-amaranth-cynthion/`
+- Cargo registry cache: Mounted during build (ephemeral)
+- Pip cache: Mounted during build (ephemeral)
+
+**When to use each:**
+- `make build-fast`: Day-to-day development (fastest)
+- `make build`: After major dependency changes
+- `make rebuild`: When troubleshooting build issues
 
 ---
 

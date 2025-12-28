@@ -1,0 +1,64 @@
+# Docker ignore file to speed up builds and reduce context size
+
+# Build artifacts
+build/
+target/
+*.bit
+*.json
+*.log
+
+# Rust build artifacts
+**/target/
+**/*.rs.bk
+Cargo.lock
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+.pytest_cache/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation (not needed for build)
+*.md
+!README.md
+
+# CI/CD
+.github/
+
+# Test outputs
+*.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# HDL build outputs (will be generated in container)
+HDL/tools/build/
+HDL/hardware/testbenches/*.vcd
+HDL/hardware/testbenches/*.out
+
+# Deployment script (not needed inside container)
+deploy.sh
+
+# Local configuration
+.env
+.env.local

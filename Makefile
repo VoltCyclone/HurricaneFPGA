@@ -1,8 +1,12 @@
-.PHONY: help build deploy clean rebuild run-python run-rust test docker-shell
+.PHONY: help build build-fast deploy clean clean-cache clean-all rebuild rebuild-fast run-python run-rust test test-local test-rust test-python test-docker-rust test-docker-python docker-shell
 
 # Default Docker image name
 IMAGE_NAME ?= amaranth-cynthion
 BUILD_DIR := ./build
+
+# Docker BuildKit settings for better caching
+export DOCKER_BUILDKIT=1
+export BUILDKIT_PROGRESS=plain
 
 # Colors for output
 CYAN := \033[0;36m
@@ -19,14 +23,33 @@ help: ## Show this help message
 	@echo ""
 	@echo "$(GREEN)Usage examples:$(NC)"
 	@echo "  make build          # Build Docker image and extract artifacts"
-	@echo "  make rebuild        # Clean and rebuild everything"
+	@echo "  make build-fast     # Fast rebuild using existing cache"
+	@echo "  make test           # Run all tests in Docker container"
+	@echo "  make test-local     # Run all tests locally"
+	@echo "  make rebuild        # Clean everything and rebuild from scratch"
+	@echo "  make rebuild-fast   # Clean artifacts but keep cache"
 	@echo "  make deploy         # Extract artifacts from existing image"
 	@echo "  make run-rust       # Run the Rust CLI tool"
 
 build: ## Build Docker image and extract artifacts
-	@echo "$(CYAN)Building Docker image...$(NC)"
-	docker build -t $(IMAGE_NAME) .
+	@echo "$(CYAN)Building Docker image with BuildKit caching...$(NC)"
+	docker buildx build \
+		--load \
+		--cache-from=type=local,src=/tmp/docker-cache-$(IMAGE_NAME) \
+		--cache-to=type=local,dest=/tmp/docker-cache-$(IMAGE_NAME),mode=max \
+		-t $(IMAGE_NAME) \
+		.
 	@echo "$(GREEN)Build complete!$(NC)"
+	@$(MAKE) deploy
+
+build-fast: ## Build Docker image using existing cache (skip cache export)
+	@echo "$(CYAN)Fast building Docker image using cache...$(NC)"
+	docker buildx build \
+		--load \
+		--cache-from=type=local,src=/tmp/docker-cache-$(IMAGE_NAME) \
+		-t $(IMAGE_NAME) \
+		.
+	@echo "$(GREEN)Fast build complete!$(NC)"
 	@$(MAKE) deploy
 
 deploy: ## Extract build artifacts from Docker container
@@ -45,7 +68,14 @@ clean-all: clean ## Remove build artifacts AND Docker image
 	docker rmi $(IMAGE_NAME) 2>/dev/null || true
 	@echo "$(GREEN)Deep clean complete!$(NC)"
 
-rebuild: clean-all build ## Clean everything and rebuild from scratch
+clean-cache: ## Remove Docker build cache
+	@echo "$(YELLOW)Removing Docker build cache...$(NC)"
+	rm -rf /tmp/docker-cache-$(IMAGE_NAME)
+	@echo "$(GREEN)Cache cleaned!$(NC)"
+
+rebuild: clean-all clean-cache build ## Clean everything and rebuild from scratch
+
+rebuild-fast: clean build-fast ## Clean artifacts but keep cache and rebuild
 
 run-python: ## Run the Python gateware builder (legacy)
 	@echo "$(CYAN)Running Python gateware builder...$(NC)"
@@ -64,12 +94,18 @@ run-rust: deploy ## Run the Rust CLI tool (requires deploy first)
 		exit 1; \
 	fi
 
-test: ## Run tests inside Docker container
-	@echo "$(CYAN)Running tests...$(NC)"
+test: ## Run all tests inside Docker container
+	@echo "$(CYAN)Running tests in Docker container...$(NC)"
+	@if ! docker image inspect $(IMAGE_NAME) > /dev/null 2>&1; then \
+		echo "$(YELLOW)Docker image not found. Building...$(NC)"; \
+		$(MAKE) build; \
+	fi
 	docker run --rm -it \
 		-v $(PWD):/work \
+		-w /work \
 		$(IMAGE_NAME) \
-		sh -c "cargo test && python -m pytest"
+		bash -c "cd firmware/samd51_hid_injector && cargo test --lib && cd /work && python3 tools/test_descriptor_unit.py && python3 tools/test_injection_unit.py"
+	@echo "$(GREEN)All tests passed!$(NC)"
 
 test-local: ## Run all tests locally (without Docker)
 	@echo "$(CYAN)Running local tests...$(NC)"
@@ -83,6 +119,22 @@ test-python: ## Run Python unit tests only
 	@echo "$(CYAN)Running Python tests...$(NC)"
 	python3 tools/test_descriptor_unit.py
 	python3 tools/test_injection_unit.py
+
+test-docker-rust: ## Run Rust tests in Docker container
+	@echo "$(CYAN)Running Rust tests in Docker...$(NC)"
+	docker run --rm -it \
+		-v $(PWD):/work \
+		-w /work/firmware/samd51_hid_injector \
+		$(IMAGE_NAME) \
+		cargo test --lib
+
+test-docker-python: ## Run Python tests in Docker container
+	@echo "$(CYAN)Running Python tests in Docker...$(NC)"
+	docker run --rm -it \
+		-v $(PWD):/work \
+		-w /work \
+		$(IMAGE_NAME) \
+		bash -c "python3 tools/test_descriptor_unit.py && python3 tools/test_injection_unit.py"
 
 test-coverage: ## Run tests with coverage (Rust only)
 	@echo "$(CYAN)Running tests with coverage...$(NC)"

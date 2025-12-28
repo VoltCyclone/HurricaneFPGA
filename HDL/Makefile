@@ -103,12 +103,12 @@ synth-max: validate
 $(ROUTED_JSON): $(SYNTH_JSON) $(CONSTRAINT_FILE)
 	@echo "$(CYAN)[3/4] Running place-and-route with $(JOBS) threads...$(NC)"
 	@nextpnr-ecp5 \
-		--45k \
-		--package CABGA381 \
+		--12k \
+		--package CABGA256 \
 		--json $(SYNTH_JSON) \
 		--lpf $(CONSTRAINT_FILE) \
 		--textcfg $(BUILD_DIR)/$(TOP_MODULE)_out.config \
-		--json $(ROUTED_JSON) \
+		--write $(ROUTED_JSON) \
 		--log $(BUILD_DIR)/logs/pnr.log \
 		--threads $(JOBS) \
 		--parallel-refine \
