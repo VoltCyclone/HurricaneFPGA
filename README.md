@@ -93,6 +93,7 @@ docker build -t amaranth-cynthion .
 - Subsequent builds with `make build-fast` typically complete in 1-2 minutes
 - BuildKit cache mounts speed up Cargo and pip operations significantly
 - The `.dockerignore` file ensures only necessary files are included in build context
+- In CI environments (GitHub Actions), inline cache is automatically used for compatibility
 
 See `make help` for all available commands.
 
@@ -162,7 +163,8 @@ make clean-cache          # Remove only the Docker build cache
 ```
 
 **Cache Storage:**
-- Layer cache: `/tmp/docker-cache-amaranth-cynthion/`
+- Local development: `/tmp/docker-cache-amaranth-cynthion/` (local filesystem cache)
+- GitHub Actions: Inline cache in Docker image layers (compatible with docker driver)
 - Cargo registry cache: Mounted during build (ephemeral)
 - Pip cache: Mounted during build (ephemeral)
 
@@ -170,6 +172,9 @@ make clean-cache          # Remove only the Docker build cache
 - `make build-fast`: Day-to-day development (fastest)
 - `make build`: After major dependency changes
 - `make rebuild`: When troubleshooting build issues
+
+**CI/CD Notes:**
+The build system automatically detects CI environments and uses inline caching instead of local filesystem cache for compatibility with GitHub Actions' docker driver.
 
 ---
 

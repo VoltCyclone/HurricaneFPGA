@@ -8,6 +8,19 @@ BUILD_DIR := ./build
 export DOCKER_BUILDKIT=1
 export BUILDKIT_PROGRESS=plain
 
+# Detect CI environment and adjust cache settings
+ifeq ($(CI),true)
+	# GitHub Actions - use inline cache (compatible with docker driver)
+	CACHE_FROM := --cache-from=$(IMAGE_NAME):latest
+	CACHE_TO := --cache-to=type=inline
+	CACHE_DIR :=
+else
+	# Local development - use local cache for best performance
+	CACHE_FROM := --cache-from=type=local,src=/tmp/docker-cache-$(IMAGE_NAME)
+	CACHE_TO := --cache-to=type=local,dest=/tmp/docker-cache-$(IMAGE_NAME),mode=max
+	CACHE_DIR := /tmp/docker-cache-$(IMAGE_NAME)
+endif
+
 # Colors for output
 CYAN := \033[0;36m
 GREEN := \033[0;32m
@@ -35,8 +48,8 @@ build: ## Build Docker image and extract artifacts
 	@echo "$(CYAN)Building Docker image with BuildKit caching...$(NC)"
 	docker buildx build \
 		--load \
-		--cache-from=type=local,src=/tmp/docker-cache-$(IMAGE_NAME) \
-		--cache-to=type=local,dest=/tmp/docker-cache-$(IMAGE_NAME),mode=max \
+		$(CACHE_FROM) \
+		$(CACHE_TO) \
 		-t $(IMAGE_NAME) \
 		.
 	@echo "$(GREEN)Build complete!$(NC)"
@@ -46,7 +59,7 @@ build-fast: ## Build Docker image using existing cache (skip cache export)
 	@echo "$(CYAN)Fast building Docker image using cache...$(NC)"
 	docker buildx build \
 		--load \
-		--cache-from=type=local,src=/tmp/docker-cache-$(IMAGE_NAME) \
+		$(CACHE_FROM) \
 		-t $(IMAGE_NAME) \
 		.
 	@echo "$(GREEN)Fast build complete!$(NC)"
@@ -70,7 +83,9 @@ clean-all: clean ## Remove build artifacts AND Docker image
 
 clean-cache: ## Remove Docker build cache
 	@echo "$(YELLOW)Removing Docker build cache...$(NC)"
-	rm -rf /tmp/docker-cache-$(IMAGE_NAME)
+ifdef CACHE_DIR
+	rm -rf $(CACHE_DIR)
+endif
 	@echo "$(GREEN)Cache cleaned!$(NC)"
 
 rebuild: clean-all clean-cache build ## Clean everything and rebuild from scratch
