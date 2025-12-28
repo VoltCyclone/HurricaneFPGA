@@ -75,7 +75,7 @@ module top (
     wire [7:0]  phy1_tx_data;       // USB1 transmit data
     wire        phy1_tx_valid;      // USB1 transmit valid
     wire        phy1_tx_ready;      // USB1 ready for transmit
-    wire [1:0]  phy1_tx_op_mode;    // USB1 operation mode
+    wire [1:0]  phy1_tx_op_mode;    // USB1 operation mode from protocol handler
     
     // PHY 2 - Target B
     wire [1:0]  phy2_line_state;    // USB2 line state
@@ -83,10 +83,31 @@ module top (
     wire        phy2_rx_valid;      // USB2 data valid
     wire        phy2_rx_active;     // USB2 receiving
     wire        phy2_rx_error;      // USB2 error
-    wire [7:0]  phy2_tx_data;       // USB2 transmit data
-    wire        phy2_tx_valid;      // USB2 transmit valid
+    wire [7:0]  phy2_tx_data;       // USB2 transmit data (multiplexed)
+    wire        phy2_tx_valid;      // USB2 transmit valid (multiplexed)
     wire        phy2_tx_ready;      // USB2 ready for transmit
-    wire [1:0]  phy2_tx_op_mode;    // USB2 operation mode
+    wire [1:0]  phy2_tx_op_mode;    // USB2 operation mode (multiplexed)
+    wire [1:0]  phy2_protocol_op_mode;  // From protocol handler
+    wire [1:0]  phy2_reset_op_mode;     // From reset controller
+    
+    // Separate TX signals for each USB host module (to avoid multiple drivers)
+    wire [7:0]  reset_tx_data;
+    wire        reset_tx_valid;
+    wire [7:0]  enum_tx_data;
+    wire        enum_tx_valid;
+    wire [7:0]  trans_tx_data;
+    wire        trans_tx_valid;
+    wire [7:0]  protocol_tx_data;
+    wire        protocol_tx_valid;
+    wire [7:0]  token_tx_data;
+    wire        token_tx_valid;
+    wire [7:0]  sof_tx_data;
+    wire        sof_tx_valid;
+    
+    // Active signals for arbiter
+    wire        trans_active;
+    wire        token_active;
+    wire        sof_active;
     
     // PHY configuration
     wire [1:0]  phy0_speed_ctrl;    // USB0 speed select
@@ -137,7 +158,18 @@ module top (
     wire        is_token_packet;    // Is token packet
     wire        is_data_packet;     // Is data packet
     
-    // Buffer manager signals
+    // Buffer manager signals - separate for monitor and proxy
+    wire [7:0]  monitor_buffer_data;      // Data for buffer from monitor
+    wire        monitor_buffer_valid;     // Buffer data valid from monitor
+    wire [63:0] monitor_buffer_timestamp; // Timestamp for buffer from monitor
+    wire [7:0]  monitor_buffer_flags;     // Buffer flags from monitor
+    
+    wire [7:0]  proxy_buffer_data;        // Data for buffer from proxy
+    wire        proxy_buffer_valid;       // Buffer data valid from proxy
+    wire [63:0] proxy_buffer_timestamp;   // Timestamp for buffer from proxy
+    wire [7:0]  proxy_buffer_flags;       // Buffer flags from proxy
+    
+    // Multiplexed buffer signals
     wire [7:0]  buffer_data;        // Data for buffer
     wire        buffer_valid;       // Buffer data valid
     wire [63:0] buffer_timestamp;   // Timestamp for buffer
@@ -146,6 +178,12 @@ module top (
     wire [7:0]  read_data;          // Read data from buffer
     wire        read_valid;         // Read valid
     wire        read_req;           // Read request
+    
+    // Assign read_req to 0 for now (no active reader)
+    assign read_req = 1'b0;
+    
+    // PHY0 tx_op_mode not connected to any protocol handler, set to normal mode
+    assign phy0_tx_op_mode = 2'b00;
     
     // Timestamp signals
     wire [63:0] timestamp;          // Current timestamp
@@ -169,9 +207,9 @@ module top (
     wire [15:0] error_count;        // Error counter
     
     // Control bus
-    reg  [7:0]  control_reg_addr;   // Control register address
-    reg  [7:0]  control_reg_data;   // Control register data
-    reg         control_reg_write;  // Control register write
+    wire [7:0]  control_reg_addr;   // Control register address
+    wire [7:0]  control_reg_data;   // Control register data
+    wire        control_reg_write;  // Control register write
     
     // Debug interface signals
     wire [7:0]  debug_cmd;          // Debug command input
@@ -222,6 +260,20 @@ module top (
     wire        token_data_valid;       // Token data valid
     wire        token_ready;            // Token generator ready
     wire        token_done;             // Token generation complete
+    
+    // Separate token request signals from each module (for arbiter)
+    wire        enum_token_start;
+    wire [1:0]  enum_token_type;
+    wire [6:0]  enum_token_addr;
+    wire [3:0]  enum_token_endp;
+    wire        trans_token_start;
+    wire [1:0]  trans_token_type;
+    wire [6:0]  trans_token_addr;
+    wire [3:0]  trans_token_endp;
+    wire        kbd_token_start;
+    wire [1:0]  kbd_token_type;
+    wire [6:0]  kbd_token_addr;
+    wire [3:0]  kbd_token_endp;
     
     // SOF Generator
     wire        sof_enable;             // Enable SOF generation
@@ -345,6 +397,10 @@ module top (
     // Global reset signal
     assign system_rst_n = reset_sync[3] & pll_locked;
     assign rst_n = system_rst_n & ~force_reset;  // Add debug forced reset
+    
+    // Multiplex phy2_tx_op_mode between reset controller and protocol handler
+    // Use protocol handler only for now to simplify
+    assign phy2_tx_op_mode = phy2_protocol_op_mode;  // Simplified - only use protocol handler
     
     // USB PHY 0 - CONTROL (Internal MCU Access)
     usb_phy_wrapper phy0 (
@@ -528,10 +584,10 @@ module top (
         .utmi_rx_active(phy2_rx_active),
         .utmi_rx_error(phy2_rx_error),
         .utmi_line_state(phy2_line_state),
-        .utmi_tx_data(phy2_tx_data),
-        .utmi_tx_valid(phy2_tx_valid),
+        .utmi_tx_data(protocol_tx_data),
+        .utmi_tx_valid(protocol_tx_valid),
         .utmi_tx_ready(phy2_tx_ready),
-        .utmi_tx_op_mode(phy2_tx_op_mode),
+        .utmi_tx_op_mode(phy2_protocol_op_mode),
         .utmi_xcvr_select(phy2_speed_ctrl),
         .utmi_termselect(),
         .utmi_dppulldown(),
@@ -580,7 +636,7 @@ module top (
         .detected_speed(detected_speed),
         
         // PHY Control Outputs
-        .phy_op_mode(phy2_tx_op_mode),
+        .phy_op_mode(phy2_reset_op_mode),
         .phy_xcvr_select(),  // Not used
         .phy_term_select(),  // Not used
         
@@ -588,8 +644,8 @@ module top (
         .phy_line_state(phy2_line_state),
         
         // UTMI Interface (connected to PHY2 for host operations)
-        .utmi_tx_data(phy2_tx_data),
-        .utmi_tx_valid(phy2_tx_valid),
+        .utmi_tx_data(reset_tx_data),
+        .utmi_tx_valid(reset_tx_valid),
         .utmi_tx_ready(phy2_tx_ready)
     );
     
@@ -625,8 +681,8 @@ module top (
         .token_done(token_done),
         
         // UTMI Transmit Interface
-        .utmi_tx_data(token_data_out),
-        .utmi_tx_valid(token_data_valid),
+        .utmi_tx_data(token_tx_data),
+        .utmi_tx_valid(token_tx_valid),
         .utmi_tx_ready(1'b1)  // Always ready for now
     );
     
@@ -678,15 +734,15 @@ module top (
         .utmi_rx_data(phy2_rx_data),
         .utmi_rx_valid(phy2_rx_valid),
         .utmi_rx_active(phy2_rx_active),
-        .utmi_tx_data(phy2_tx_data),
-        .utmi_tx_valid(phy2_tx_valid),
+        .utmi_tx_data(trans_tx_data),
+        .utmi_tx_valid(trans_tx_valid),
         .utmi_tx_ready(phy2_tx_ready),
         
         // Token Generator Interface
-        .token_start(token_start),
-        .token_type(token_type),
-        .token_addr(token_addr),
-        .token_endp(token_endp),
+        .token_start(trans_token_start),
+        .token_type(trans_token_type),
+        .token_addr(trans_token_addr),
+        .token_endp(trans_token_endp),
         .token_ready(token_ready),
         .token_done(token_done)
     );
@@ -744,10 +800,10 @@ module top (
         .detected_speed(detected_speed),
         
         // Token Generator Interface
-        .token_start(token_start),
-        .token_type(token_type),
-        .token_addr(token_addr),
-        .token_endp(token_endp),
+        .token_start(enum_token_start),
+        .token_type(enum_token_type),
+        .token_addr(enum_token_addr),
+        .token_endp(enum_token_endp),
         .token_ready(token_ready),
         .token_done(token_done),
         
@@ -755,8 +811,8 @@ module top (
         .utmi_rx_data(phy2_rx_data),
         .utmi_rx_valid(phy2_rx_valid),
         .utmi_rx_active(phy2_rx_active),
-        .utmi_tx_data(phy2_tx_data),
-        .utmi_tx_valid(phy2_tx_valid),
+        .utmi_tx_data(enum_tx_data),
+        .utmi_tx_valid(enum_tx_valid),
         .utmi_tx_ready(phy2_tx_ready),
         
         // Descriptor Parser Interface
@@ -799,10 +855,10 @@ module top (
         .poll_interval(kbd_poll_interval),
         
         // Token Generator Interface  
-        .token_start(token_start),
-        .token_type(token_type),
-        .token_addr(token_addr),
-        .token_endp(token_endp),
+        .token_start(kbd_token_start),
+        .token_type(kbd_token_type),
+        .token_addr(kbd_token_addr),
+        .token_endp(kbd_token_endp),
         .token_ready(token_ready),
         .token_done(token_done),
         
@@ -832,7 +888,8 @@ module top (
         
         // Status
         .status(),
-        .poll_count()
+        .poll_count(),
+        .active(kbd_active)
     );
     
     // USB HID Mouse Engine - Polls mouse interrupt endpoint
@@ -876,9 +933,101 @@ module top (
         .trans_data_out_ready(trans_data_out_ready)
     );
     
+    // USB Token Request Arbiter - Arbitrates token generator requests
+    usb_token_arbiter token_arbiter (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // Enumerator Token Requests
+        .enum_token_start(enum_token_start),
+        .enum_token_type(enum_token_type),
+        .enum_token_addr(enum_token_addr),
+        .enum_token_endp(enum_token_endp),
+        .enum_active(enum_done && !enum_error),
+        
+        // Transaction Engine Token Requests
+        .trans_token_start(trans_token_start),
+        .trans_token_type(trans_token_type),
+        .trans_token_addr(trans_token_addr),
+        .trans_token_endp(trans_token_endp),
+        .trans_active(trans_active),
+        
+        // Keyboard Engine Token Requests
+        .kbd_token_start(kbd_token_start),
+        .kbd_token_type(kbd_token_type),
+        .kbd_token_addr(kbd_token_addr),
+        .kbd_token_endp(kbd_token_endp),
+        .kbd_active(kbd_enable),
+        
+        // Token Generator Interface (output)
+        .token_start(token_start),
+        .token_type(token_type),
+        .token_addr(token_addr),
+        .token_endp(token_endp)
+    );
+    
+    // USB Host Arbiter - Multiplexes PHY2 TX signals from multiple host controllers
+    usb_host_arbiter host_arbiter (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // Priority-based inputs (highest to lowest)
+        .reset_tx_data(reset_tx_data),
+        .reset_tx_valid(reset_tx_valid),
+        .reset_active(reset_active),
+        
+        .enum_tx_data(enum_tx_data),
+        .enum_tx_valid(enum_tx_valid),
+        .enum_active(enum_done && !enum_error),  // Active when enumeration succeeded
+        
+        .trans_tx_data(trans_tx_data),
+        .trans_tx_valid(trans_tx_valid),
+        .trans_active(trans_active),
+        
+        .protocol_tx_data(protocol_tx_data),
+        .protocol_tx_valid(protocol_tx_valid),
+        .protocol_active(protocol_active),
+        
+        .token_tx_data(token_tx_data),
+        .token_tx_valid(token_tx_valid),
+        .token_active(token_active),
+        
+        .sof_tx_data(sof_tx_data),
+        .sof_tx_valid(sof_tx_valid),
+        .sof_active(sof_active),
+        
+        // Output to PHY2
+        .phy_tx_data(phy2_tx_data),
+        .phy_tx_valid(phy2_tx_valid)
+    );
+    
+    // Active signal assignments for arbiter priority logic
+    // reset_active is already driven by reset_ctrl module
+    assign protocol_active = 1'b0;  // Protocol handler is passive (responds to packets)
+    assign trans_active = trans_start && !trans_done;  // Active during transactions
+    assign token_active = !token_ready;  // Active when token generator is busy
+    assign sof_active = sof_enable;  // Active when SOF generation enabled
+    
+    // Tie-offs for unimplemented features
+    assign trans_data_in = 8'h00;           // No OUT/SETUP data source yet
+    assign trans_data_in_valid = 1'b0;      // No data available
+    assign trans_type = 2'b00;              // No transaction requests
+    assign trans_data_len = 8'd0;           // No data length
+    assign control_reg_addr = 8'h00;        // No runtime config yet
+    assign control_reg_data = 8'h00;        // No config data
+    assign control_reg_write = 1'b0;        // No config writes
+    assign uart_tx_data = 8'h00;            // No UART TX data yet
+    assign uart_tx_valid = 1'b0;            // No UART transmissions
+    
     // =======================================================================
     // END USB HOST MODE COMPONENTS
     // =======================================================================
+    
+    // Buffer multiplexing - use monitor data when available, otherwise proxy
+    assign buffer_data = monitor_buffer_valid ? monitor_buffer_data : proxy_buffer_data;
+    assign buffer_valid = monitor_buffer_valid | proxy_buffer_valid;
+    assign buffer_timestamp = monitor_buffer_valid ? monitor_buffer_timestamp : proxy_buffer_timestamp;
+    assign buffer_flags = monitor_buffer_valid ? monitor_buffer_flags : proxy_buffer_flags;
     
     // USB monitor/proxy logic
     usb_monitor monitor (
@@ -915,10 +1064,10 @@ module top (
         .device_tx_pid(device_tx_pid),
         
         // Buffer Manager Interface
-        .buffer_data(buffer_data),
-        .buffer_valid(buffer_valid),
-        .buffer_timestamp(buffer_timestamp),
-        .buffer_flags(buffer_flags),
+        .buffer_data(monitor_buffer_data),
+        .buffer_valid(monitor_buffer_valid),
+        .buffer_timestamp(monitor_buffer_timestamp),
+        .buffer_flags(monitor_buffer_flags),
         .buffer_ready(buffer_ready),
         
         // Timestamp Interface
@@ -973,10 +1122,10 @@ module top (
         .device_tx_eop(),
         
         // Buffer Manager Interface
-        .buffer_data(packet_data),
-        .buffer_valid(packet_valid),
-        .buffer_timestamp(timestamp),
-        .buffer_flags(),
+        .buffer_data(proxy_buffer_data),
+        .buffer_valid(proxy_buffer_valid),
+        .buffer_timestamp(proxy_buffer_timestamp),
+        .buffer_flags(proxy_buffer_flags),
         .buffer_ready(buffer_ready),
         
         // Timestamp Generator Interface
@@ -1040,7 +1189,7 @@ module top (
         
         // Configuration
         .enable_overflow_protection(1'b1),
-        .buffer_mode(2'b01)  // Separate buffers for each direction
+        .buffer_mode(2'b00)  // Use single buffer mode to simplify (was 2'b01)
     );
     
     // Timestamp generator

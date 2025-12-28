@@ -237,7 +237,7 @@ module packet_proxy (
             data_phase <= 1'b0;
             last_token <= 16'h0000;
             frame_number <= 16'h0000;
-            fast_path_enabled <= 1'b1;
+            // fast_path_enabled moved to config register handler
             crc_valid <= 1'b1;
             
             // Output registers
@@ -551,7 +551,7 @@ module packet_proxy (
     // Configuration register write handling
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            // Reset configuration
+            // Initialize fast path optimization
             fast_path_enabled <= 1'b1;
         end else if (control_reg_write) begin
             case (control_reg_addr)

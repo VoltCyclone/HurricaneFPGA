@@ -63,7 +63,8 @@ module usb_hid_keyboard_engine (
     
     // Status
     output reg  [7:0]  status,
-    output reg  [15:0] poll_count
+    output reg  [15:0] poll_count,
+    output reg         active           // Polling activity indicator
 );
 
     // Token types
@@ -143,6 +144,7 @@ module usb_hid_keyboard_engine (
             report_key5 <= 8'd0;
             status <= 8'd0;
             poll_count <= 16'd0;
+            active <= 1'b0;
             rx_count <= 7'd0;
             data_pid <= 1'b0;
             last_frame <= 11'd0;
@@ -156,6 +158,7 @@ module usb_hid_keyboard_engine (
             // Default outputs
             token_start <= 1'b0;
             report_valid <= 1'b0;
+            active <= (state != STATE_IDLE) && enable && enumerated;
             
             // Watchdog counter
             if (state != STATE_IDLE && enable && enumerated)

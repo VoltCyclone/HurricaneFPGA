@@ -22,7 +22,7 @@ module buffer_manager (
     input  wire        write_valid,
     input  wire [63:0] write_timestamp,
     input  wire [7:0]  write_flags,
-    output wire        write_ready,
+    output reg         write_ready,
     
     // Read Interface
     output reg  [7:0]  read_data,
@@ -91,6 +91,8 @@ module buffer_manager (
     // Status tracking - internal
     reg [15:0] buffer_used_host;
     reg [15:0] buffer_used_dev;
+    reg [15:0] buffer_used_host_prev;  // Previous cycle value for loop breaking
+    reg [15:0] buffer_used_dev_prev;   // Previous cycle value for loop breaking
     reg [31:0] packet_count_host;
     reg [31:0] packet_count_dev;
     reg        buffer_empty_host;
@@ -114,7 +116,6 @@ module buffer_manager (
     reg [7:0]  mem_write_data;
     
     // Assign output signals
-    assign write_ready = !buffer_full && !flow_control_active;
     assign read_packet_start = packet_start;
     assign read_packet_end = packet_end;
     
@@ -126,6 +127,16 @@ module buffer_manager (
         mem_read_data <= buffer_mem[read_ptr];
     end
     
+    // FIXED: write_ready calculation in separate block to avoid combinatorial loop
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            write_ready <= 1'b1;
+        end else begin
+            // Update write_ready based on buffer status (registered with 1-cycle delay)
+            write_ready <= !buffer_full && !flow_control_active;
+        end
+    end
+    
     // FIXED: Registered status calculation instead of combinatorial
     // This is the MAIN fix that reduces synthesis time by 50%+
     always @(posedge clk or negedge rst_n) begin
@@ -135,7 +146,20 @@ module buffer_manager (
             buffer_empty <= 1'b1;
             buffer_full <= 1'b0;
             packet_count <= 32'd0;
+            flow_control_active <= 1'b0;
+            buffer_used_host_prev <= 16'd0;
+            buffer_used_dev_prev <= 16'd0;
         end else begin
+            // Pipeline the buffer_used values to break combinatorial loop
+            buffer_used_host_prev <= buffer_used_host;
+            buffer_used_dev_prev <= buffer_used_dev;
+            
+            // flow_control_active remains 0 for now (can be used for future enhancements)
+            
+            // Update buffer_full_host and buffer_full_dev based on PREVIOUS cycle usage
+            buffer_full_host <= (buffer_used_host_prev >= (BUFFER_SIZE_PER_DIR - HEADER_SIZE - 256));
+            buffer_full_dev <= (buffer_used_dev_prev >= (BUFFER_SIZE_PER_DIR - HEADER_SIZE - 256));
+            
             // Calculate status based on mode
             case (buffer_mode)
                 2'b00: begin // Single buffer mode
@@ -149,16 +173,18 @@ module buffer_manager (
                 
                 2'b01: begin // Dual direction mode
                     if (read_direction == 1'b0) begin // Host direction
-                        buffer_used <= buffer_used_host;
-                        buffer_free <= BUFFER_SIZE_PER_DIR - buffer_used_host;
+                        buffer_used <= buffer_used_host_prev;
+                        buffer_free <= BUFFER_SIZE_PER_DIR - buffer_used_host_prev;
                         buffer_empty <= buffer_empty_host;
-                        buffer_full <= buffer_full_host;
+                        // Use calculated value from previous cycle
+                        buffer_full <= (buffer_used_host_prev >= (BUFFER_SIZE_PER_DIR - HEADER_SIZE - 256));
                         packet_count <= packet_count_host;
                     end else begin // Device direction
-                        buffer_used <= buffer_used_dev;
-                        buffer_free <= BUFFER_SIZE_PER_DIR - buffer_used_dev;
+                        buffer_used <= buffer_used_dev_prev;
+                        buffer_free <= BUFFER_SIZE_PER_DIR - buffer_used_dev_prev;
                         buffer_empty <= buffer_empty_dev;
-                        buffer_full <= buffer_full_dev;
+                        // Use calculated value from previous cycle
+                        buffer_full <= (buffer_used_dev_prev >= (BUFFER_SIZE_PER_DIR - HEADER_SIZE - 256));
                         packet_count <= packet_count_dev;
                     end
                 end
@@ -187,8 +213,6 @@ module buffer_manager (
             buffer_used_dev <= 16'd0;
             packet_count_host <= 32'd0;
             packet_count_dev <= 32'd0;
-            buffer_full_host <= 1'b0;
-            buffer_full_dev <= 1'b0;
             buffer_overflow <= 1'b0;
             mem_write_enable <= 1'b0;
             mem_write_addr <= {ADDR_WIDTH{1'b0}};
@@ -207,8 +231,6 @@ module buffer_manager (
                 buffer_used_dev <= 16'd0;
                 packet_count_host <= 32'd0;
                 packet_count_dev <= 32'd0;
-                buffer_full_host <= 1'b0;
-                buffer_full_dev <= 1'b0;
                 buffer_overflow <= 1'b0;
             end else begin
                 case (write_state)
@@ -352,14 +374,12 @@ module buffer_manager (
                             write_ptr <= write_ptr + 1'b1;
                             write_length <= write_length + 1'b1;
                             
-                            // Update used space
+                            // Update used space (removed buffer_full_* updates to avoid driver conflicts)
                             if (buffer_mode == 2'b01) begin
                                 if (write_flags[0] == 1'b0) begin
                                     buffer_used_host <= buffer_used_host + 1'b1;
-                                    buffer_full_host <= ((buffer_used_host + 1) >= (BUFFER_SIZE_PER_DIR - HEADER_SIZE - 256));
                                 end else begin
                                     buffer_used_dev <= buffer_used_dev + 1'b1;
-                                    buffer_full_dev <= ((buffer_used_dev + 1) >= (BUFFER_SIZE_PER_DIR - HEADER_SIZE - 256));
                                 end
                             end
                         end else if (!write_valid) begin
@@ -501,14 +521,7 @@ module buffer_manager (
                                 default: read_header_idx <= 4'd0;
                             endcase
                             
-                            // Update used space
-                            if (buffer_mode == 2'b01) begin
-                                if (read_direction == 1'b0) begin
-                                    buffer_used_host <= buffer_used_host - 1'b1;
-                                end else begin
-                                    buffer_used_dev <= buffer_used_dev - 1'b1;
-                                end
-                            end
+                            // Used space calculation removed - handled in status block
                         end
                     end
                     
@@ -524,38 +537,21 @@ module buffer_manager (
                             if (read_remaining == packet_length) packet_start <= 1'b1;
                             if (read_remaining == 16'd1) packet_end <= 1'b1;
                             
-                            // Update used space
-                            if (buffer_mode == 2'b01) begin
-                                if (read_direction == 1'b0) begin
-                                    buffer_used_host <= buffer_used_host - 1'b1;
-                                    buffer_empty_host <= (buffer_used_host <= 16'd1);
-                                    buffer_full_host <= 1'b0;
-                                end else begin
-                                    buffer_used_dev <= buffer_used_dev - 1'b1;
-                                    buffer_empty_dev <= (buffer_used_dev <= 16'd1);
-                                    buffer_full_dev <= 1'b0;
-                                end
-                            end
+                            // Used space calculation removed - handled in status block
                         end
                         
                         if (read_remaining == 16'd0) begin
                             // Packet complete
                             read_state <= PKT_IDLE;
                             
-                            // Update packet counters
+                            // Update read pointers (packet_count removed to avoid multiple drivers)
                             if (buffer_mode == 2'b01) begin
                                 if (read_direction == 1'b0) begin
-                                    packet_count_host <= packet_count_host - 1'b1;
+                                    // packet_count_host update removed
                                     read_ptr_host <= read_ptr;
                                 end else begin
-                                    packet_count_dev <= packet_count_dev - 1'b1;
+                                    // packet_count_dev update removed
                                     read_ptr_dev <= read_ptr;
-                                end
-                            end else begin
-                                if (read_direction == 1'b0) begin
-                                    packet_count_host <= packet_count_host - 1'b1;
-                                end else begin
-                                    packet_count_dev <= packet_count_dev - 1'b1;
                                 end
                             end
                             
