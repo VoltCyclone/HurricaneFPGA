@@ -32,6 +32,11 @@ MANIFEST
 *.manifest
 *.spec
 
+# Build artifacts from Docker
+build/binaries/
+build/firmware/
+build/build-info.txt
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt

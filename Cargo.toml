@@ -1,18 +1,22 @@
 [package]
-name = "hurricanefpga" # Maybe rename the package
+name = "hurricanefpga"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+[[bin]]
+name = "hurricanefpga"
+path = "legacy/src/frontend/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-nusb = "0.1.13" # Updated to latest available version
-bitfield = "0.13" # Or the version you were using
-serialport = "4.2" # For serial communication
-clap = { version = "4.4", features = ["derive"] } # For command-line parsing
-ctrlc = "3.4" # For graceful shutdown on Ctrl+C
-futures-lite = "1.13" # For block_on in async code
-futures-channel = "0.3" # For oneshot channel
-hut = "0.4.0" # Human Interface Device Usage Tables
+nusb = "0.1.13"
+bitfield = "0.13"
+serialport = "4.2"
+clap = { version = "4.4", features = ["derive"] }
+ctrlc = "3.4"
+futures-lite = "1.13"
+futures-channel = "0.3"
+hut = "0.4.0"
 
 # Dependencies for testing only
 [dev-dependencies]

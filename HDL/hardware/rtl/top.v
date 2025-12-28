@@ -28,8 +28,12 @@ module top (
     inout  wire        usb2_dn,         // USB D- (bidirectional)
     output wire        usb2_pullup,     // USB pullup control
     
-    // Status LEDs
-    output wire [7:0]  led,             // Status LEDs
+    // UART0 to SAMD51 (USB CDC-ACM bridge)
+    input  wire        uart0_rx,        // UART receive from SAMD51
+    output wire        uart0_tx,        // UART transmit to SAMD51
+    
+    // Status LEDs (Cynthion has 6 FPGA LEDs: 0-5)
+    output wire [5:0]  led,             // Status LEDs
     
     // Debug Interface
     output wire [3:0]  debug            // Debug signals
@@ -178,6 +182,18 @@ module top (
     wire [7:0]  debug_probe;        // Debug probe outputs
     wire        force_reset;        // Force system reset
     
+    // UART0 interface signals (to SAMD51)
+    wire [7:0]  uart_tx_data;       // UART transmit data
+    wire        uart_tx_valid;      // UART transmit valid
+    wire        uart_tx_ready;      // UART ready for data
+    wire [7:0]  uart_rx_data;       // UART received data
+    wire        uart_rx_valid;      // UART receive valid
+    wire        uart_rx_ready;      // UART ready to accept
+    wire        uart_tx_busy;       // UART transmitter busy
+    wire        uart_rx_error;      // UART receiver error
+    wire [7:0]  uart_tx_fifo_used;  // TX FIFO occupancy
+    wire [7:0]  uart_rx_fifo_used;  // RX FIFO occupancy
+    
     // PHY monitoring
     wire        event_valid;        // PHY event valid
     wire [7:0]  event_type;         // PHY event type
@@ -188,6 +204,121 @@ module top (
     wire [1:0]  host_conn_speed;    // Host connection speed
     wire        device_conn_detect; // Device connection detected
     wire [1:0]  device_conn_speed;  // Device connection speed
+    
+    // USB Host Mode Signals
+    // Reset Controller
+    wire        host_mode_enable;       // Enable USB host mode
+    wire        bus_reset_req;          // Request bus reset
+    wire        reset_active;           // Reset in progress
+    wire [1:0]  detected_speed;         // Detected device speed (00=LS, 01=FS, 10=HS)
+    wire        reset_done;             // Reset complete
+    
+    // Token Generator
+    wire        token_start;            // Start token generation
+    wire [1:0]  token_type;             // Token type (00=OUT, 01=IN, 10=SETUP, 11=SOF)
+    wire [6:0]  token_addr;             // Device address
+    wire [3:0]  token_endp;             // Endpoint number
+    wire [7:0]  token_data_out;         // Token data to PHY
+    wire        token_data_valid;       // Token data valid
+    wire        token_ready;            // Token generator ready
+    wire        token_done;             // Token generation complete
+    
+    // SOF Generator
+    wire        sof_enable;             // Enable SOF generation
+    wire        sof_trigger;            // SOF trigger output
+    wire [10:0] sof_frame_number;       // Current frame number
+    wire        sof_start;              // Start SOF packet
+    wire [7:0]  sof_data_out;           // SOF data to PHY
+    wire        sof_data_valid;         // SOF data valid
+    wire        sof_done;               // SOF generation complete
+    
+    // Transaction Engine
+    wire        trans_start;            // Start transaction
+    wire [1:0]  trans_type;             // Transaction type (00=SETUP, 01=IN, 10=OUT)
+    wire [6:0]  trans_addr;             // Transaction device address
+    wire [3:0]  trans_endp;             // Transaction endpoint
+    wire        trans_data_pid;         // Data PID (0=DATA0, 1=DATA1)
+    wire [9:0]  trans_data_len;         // Data length
+    wire [7:0]  trans_data_in;          // Data input for OUT/SETUP
+    wire        trans_data_in_valid;    // Data input valid
+    wire        trans_data_in_ready;    // Ready for data input
+    wire [7:0]  trans_data_out;         // Data output for IN
+    wire        trans_data_out_valid;   // Data output valid
+    wire        trans_data_out_ready;   // Ready to accept data output
+    wire        trans_done;             // Transaction complete
+    wire [2:0]  trans_result;           // Transaction result (ACK/NAK/STALL/etc)
+    
+    // USB Enumerator
+    wire        enum_start;             // Start enumeration
+    wire        enum_done;              // Enumeration complete
+    wire        enum_error;             // Enumeration error
+    wire [7:0]  enum_error_code;        // Error code
+    wire [6:0]  enum_device_addr;       // Assigned device address
+    wire [7:0]  enum_config_num;        // Configuration number to select
+    wire [15:0] enum_vendor_id;         // Device vendor ID
+    wire [15:0] enum_product_id;        // Device product ID
+    wire [7:0]  enum_max_packet_size;   // Max packet size for EP0
+    wire [7:0]  enum_num_configs;       // Number of configurations
+    wire [7:0]  enum_interface_num;     // HID interface number
+    wire [7:0]  enum_config_desc_out;   // Config descriptor output
+    wire        enum_config_desc_valid; // Config descriptor valid
+    wire        enum_config_desc_done;  // Config descriptor complete
+    
+    // Descriptor Parser
+    wire        parser_desc_in_valid;   // Descriptor input valid
+    wire [7:0]  parser_desc_in;         // Descriptor input data
+    wire        parser_desc_done;       // Parsing complete
+    wire        parser_enable;          // Enable parser
+    wire        parser_done;            // Parser done
+    wire [7:0]  parser_num_endpoints;   // Number of endpoints found
+    wire [6:0]  parser_ep_addr;         // Endpoint address
+    wire [1:0]  parser_ep_type;         // Endpoint type
+    wire [10:0] parser_ep_max_packet;   // Endpoint max packet size
+    wire [7:0]  parser_ep_interval;     // Endpoint polling interval
+    wire [7:0]  parser_iface_protocol;  // Interface protocol (0x01=kbd, 0x02=mouse)
+    wire [7:0]  parser_iface_number;    // Interface number
+    wire        parser_ep_valid;        // Endpoint info valid
+    
+    // HID Keyboard Engine
+    wire        kbd_enable;             // Enable keyboard polling
+    wire [6:0]  kbd_device_addr;        // Keyboard device address
+    wire [3:0]  kbd_endpoint;           // Keyboard interrupt endpoint
+    wire [10:0] kbd_max_packet_size;    // Endpoint max packet size
+    wire [7:0]  kbd_poll_interval;      // Polling interval (ms)
+    wire [511:0] kbd_report_data;       // Keyboard report (up to 64 bytes)
+    wire        kbd_report_valid;       // New report available
+    wire [6:0]  kbd_report_length;      // Actual report length
+    wire        kbd_active;             // Keyboard actively polling
+    wire        kbd_error;              // Keyboard error
+    wire [7:0]  kbd_error_code;         // Error code
+    
+    // HID Mouse Engine
+    wire        mouse_enable;           // Enable mouse polling
+    wire [6:0]  mouse_device_addr;      // Mouse device address
+    wire [3:0]  mouse_endpoint;         // Mouse interrupt endpoint
+    wire [10:0] mouse_max_packet_size;  // Endpoint max packet size
+    wire [7:0]  mouse_poll_interval;    // Polling interval (ms)
+    wire [511:0] mouse_report_data;     // Mouse report (up to 64 bytes)
+    wire        mouse_report_valid;     // New report available
+    wire [6:0]  mouse_report_length;    // Actual report length
+    wire [7:0]  mouse_button_state;     // Button states
+    wire signed [7:0] mouse_delta_x;    // X movement
+    
+    // Disconnect Detector
+    wire        disconnect_enable;      // Enable disconnect detection
+    wire        device_connected;       // Device connection status
+    wire        disconnect_detected;    // Disconnect event detected
+    wire signed [7:0] mouse_delta_y;    // Y movement
+    wire signed [7:0] mouse_wheel_delta; // Wheel scroll
+    wire        mouse_active;           // Mouse actively polling
+    wire        mouse_error;            // Mouse error
+    wire [7:0]  mouse_error_code;       // Error code
+    
+    // USB Host Control Registers
+    reg         host_mode_enable_reg;   // Host mode enable register
+    reg         enum_start_reg;         // Start enumeration register
+    reg  [6:0]  target_device_addr;     // Target device address for enumeration
+    reg  [7:0]  target_config_num;      // Target configuration number
     
     // Reset logic
     reg [3:0]   reset_sync;         // Reset synchronizer
@@ -434,6 +565,311 @@ module top (
         .resume_detect()
     );
     
+    // =======================================================================
+    // USB HOST MODE COMPONENTS
+    // =======================================================================
+    
+    // USB Reset Controller - Handles bus reset with speed detection
+    usb_reset_controller reset_ctrl (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // Control Interface
+        .bus_reset_req(bus_reset_req),
+        .reset_active(reset_active),
+        .detected_speed(detected_speed),
+        .reset_done(reset_done),
+        
+        // UTMI Interface (connected to PHY2 for host operations)
+        .utmi_line_state(phy2_line_state),
+        .utmi_tx_data(phy2_tx_data),
+        .utmi_tx_valid(phy2_tx_valid),
+        .utmi_tx_ready(phy2_tx_ready),
+        .utmi_tx_op_mode(phy2_tx_op_mode)
+    );
+    
+    // USB Disconnect Detector - Monitors line state for device disconnect/connect
+    usb_disconnect_detector disconnect_det (
+        .clk(clk),
+        .reset(~rst_n),
+        
+        // USB line state from PHY2 (host port)
+        .line_state(phy2_line_state),
+        
+        // Configuration
+        .enable(disconnect_enable),
+        .high_speed(detected_speed == 2'b10),  // High-speed if detected_speed is 10
+        
+        // Status output
+        .device_connected(device_connected),
+        .disconnect_detected(disconnect_detected)
+    );
+    
+    // USB Token Generator - Generates USB token packets
+    usb_token_generator token_gen (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // Control Interface
+        .token_start(token_start),
+        .token_type(token_type),
+        .token_addr(token_addr),
+        .token_endp(token_endp),
+        .token_ready(token_ready),
+        .token_done(token_done),
+        
+        // Output Interface
+        .token_data(token_data_out),
+        .token_valid(token_data_valid)
+    );
+    
+    // USB SOF Generator - Generates Start-of-Frame packets
+    usb_sof_generator sof_gen (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // Control Interface
+        .sof_enable(sof_enable),
+        .usb_speed(detected_speed),
+        
+        // SOF Outputs
+        .sof_trigger(sof_trigger),
+        .frame_number(sof_frame_number),
+        .sof_start(sof_start),
+        .sof_data(sof_data_out),
+        .sof_valid(sof_data_valid),
+        .sof_done(sof_done)
+    );
+    
+    // USB Transaction Engine - Handles SETUP/IN/OUT transactions
+    usb_transaction_engine trans_engine (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // Control Interface
+        .trans_start(trans_start),
+        .trans_type(trans_type),
+        .trans_addr(trans_addr),
+        .trans_endp(trans_endp),
+        .trans_data_pid(trans_data_pid),
+        .trans_data_len(trans_data_len),
+        .trans_done(trans_done),
+        .trans_result(trans_result),
+        
+        // Data Interfaces
+        .data_in(trans_data_in),
+        .data_in_valid(trans_data_in_valid),
+        .data_in_ready(trans_data_in_ready),
+        .data_out(trans_data_out),
+        .data_out_valid(trans_data_out_valid),
+        .data_out_ready(trans_data_out_ready),
+        
+        // UTMI Interface (connected to PHY2 for host operations)
+        .utmi_rx_data(phy2_rx_data),
+        .utmi_rx_valid(phy2_rx_valid),
+        .utmi_rx_active(phy2_rx_active),
+        .utmi_tx_data(phy2_tx_data),
+        .utmi_tx_valid(phy2_tx_valid),
+        .utmi_tx_ready(phy2_tx_ready),
+        
+        // Token Generator Interface
+        .token_start(token_start),
+        .token_type(token_type),
+        .token_addr(token_addr),
+        .token_endp(token_endp),
+        .token_ready(token_ready),
+        .token_done(token_done)
+    );
+    
+    // USB Descriptor Parser - Parses configuration descriptors
+    usb_descriptor_parser desc_parser (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // Control Interface
+        .enable(parser_enable),
+        .done(parser_done),
+        .valid(parser_ep_valid),
+        
+        // Descriptor Input Stream
+        .desc_data(parser_desc_in),
+        .desc_valid(parser_desc_in_valid),
+        .desc_ready(),  // Not used
+        
+        // Filter Configuration
+        .filter_class(8'h03),              // HID class
+        .filter_subclass(8'hFF),           // Any subclass
+        .filter_protocol(8'hFF),           // Any protocol
+        .filter_transfer_type(2'b11),      // Interrupt transfer
+        .filter_direction(1'b1),           // IN endpoint
+        
+        // Extracted Endpoint Information
+        .endp_number(parser_ep_addr[3:0]),
+        .endp_direction(),                 // Always IN for our filter
+        .endp_type(parser_ep_type),
+        .endp_max_packet(parser_ep_max_packet),
+        .endp_interval(parser_ep_interval),
+        .iface_protocol_out(parser_iface_protocol),
+        .iface_number_out(parser_iface_number)
+    );
+    
+    // USB Enumerator - Orchestrates device enumeration
+    usb_enumerator enumerator (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // Control Interface
+        .start_enum(enum_start),
+        .enum_done(enum_done),
+        .enum_error(enum_error),
+        .error_code(enum_error_code),
+        
+        // Configuration
+        .device_addr(enum_device_addr),
+        .config_number(enum_config_num),
+        
+        // Reset Controller Interface
+        .bus_reset_req(bus_reset_req),
+        .reset_active(reset_active),
+        .detected_speed(detected_speed),
+        
+        // Token Generator Interface
+        .token_start(token_start),
+        .token_type(token_type),
+        .token_addr(token_addr),
+        .token_endp(token_endp),
+        .token_ready(token_ready),
+        .token_done(token_done),
+        
+        // UTMI Interfaces
+        .utmi_rx_data(phy2_rx_data),
+        .utmi_rx_valid(phy2_rx_valid),
+        .utmi_rx_active(phy2_rx_active),
+        .utmi_tx_data(phy2_tx_data),
+        .utmi_tx_valid(phy2_tx_valid),
+        .utmi_tx_ready(phy2_tx_ready),
+        
+        // Descriptor Parser Interface
+        .parser_enable(parser_enable),
+        .parser_done(parser_done),
+        .parser_valid(parser_ep_valid),
+        .parser_data(parser_desc_in),
+        .parser_data_valid(parser_desc_in_valid),
+        
+        // Device Information Outputs
+        .max_packet_size(enum_max_packet_size),
+        .device_speed(),
+        .vendor_id(enum_vendor_id),
+        .product_id(enum_product_id),
+        .interface_num(enum_interface_num),
+        
+        // SOF Counter
+        .sof_count(sof_frame_num[10:0])
+    );
+    
+    // Connect descriptor parser to enumerator output
+    assign parser_desc_in = enum_config_desc_out;
+    assign parser_desc_in_valid = enum_config_desc_valid;
+    assign parser_desc_done = enum_config_desc_done;
+    
+    // USB HID Keyboard Engine - Polls keyboard interrupt endpoint
+    usb_hid_keyboard_engine kbd_engine (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // Control Interface
+        .enable(kbd_enable),
+        .enumerated(enum_done),
+        
+        // Device Information (from enumerator/parser)
+        .device_addr(kbd_device_addr),
+        .endp_number(kbd_endpoint),
+        .max_packet_size(kbd_max_packet_size[7:0]),
+        .device_speed(2'b01),  // Full speed
+        .poll_interval(kbd_poll_interval),
+        
+        // Token Generator Interface  
+        .token_start(token_start),
+        .token_type(token_type),
+        .token_addr(token_addr),
+        .token_endp(token_endp),
+        .token_ready(token_ready),
+        .token_done(token_done),
+        
+        // UTMI Receive Interface
+        .utmi_rx_data(phy2_rx_data),
+        .utmi_rx_valid(phy2_rx_valid),
+        .utmi_rx_active(phy2_rx_active),
+        .utmi_rx_pid(phy2_rx_pid),
+        
+        // SOF Interface
+        .sof_trigger(sof_trigger),
+        .frame_number(sof_frame_num[10:0]),
+        
+        // Keyboard Report Output
+        .report_valid(kbd_report_valid),
+        .report_data(kbd_report_data),
+        .report_length(kbd_report_length),
+        
+        // Decoded Boot Protocol Fields (backward compatibility)
+        .report_modifiers(),  // Can connect if needed
+        .report_key0(),
+        .report_key1(),
+        .report_key2(),
+        .report_key3(),
+        .report_key4(),
+        .report_key5(),
+        
+        // Status
+        .status(),
+        .poll_count()
+    );
+    
+    // USB HID Mouse Engine - Polls mouse interrupt endpoint
+    usb_hid_mouse_engine mouse_engine (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // Control Interface
+        .enable(mouse_enable),
+        .device_addr(mouse_device_addr),
+        .endpoint(mouse_endpoint),
+        .max_packet_size(mouse_max_packet_size),
+        .poll_interval(mouse_poll_interval),
+        .device_speed(detected_speed),
+        
+        // Mouse Report Output
+        .report_data(mouse_report_data),
+        .report_valid(mouse_report_valid),
+        .report_length(mouse_report_length),
+        
+        // Decoded Mouse Data (boot protocol compatibility)
+        .button_state(mouse_button_state),
+        .delta_x(mouse_delta_x),
+        .delta_y(mouse_delta_y),
+        .wheel_delta(mouse_wheel_delta),
+        
+        // Status
+        .active(mouse_active),
+        .error(mouse_error),
+        .error_code(mouse_error_code),
+        
+        // Transaction Engine Interface
+        .trans_start(trans_start),
+        .trans_done(trans_done),
+        .trans_result(trans_result),
+        .trans_addr(trans_addr),
+        .trans_endp(trans_endp),
+        .trans_data_pid(trans_data_pid),
+        .trans_data_out(trans_data_out),
+        .trans_data_out_valid(trans_data_out_valid),
+        .trans_data_out_ready(trans_data_out_ready)
+    );
+    
+    // =======================================================================
+    // END USB HOST MODE COMPONENTS
+    // =======================================================================
+    
     // USB monitor/proxy logic
     usb_monitor monitor (
         .clk(clk),
@@ -635,7 +1071,262 @@ module top (
         modify_enable = 1'b0;
         modify_flags = 8'h00;
         resolution_ctrl = 4'h0;  // Full 60MHz resolution
+        
+        // USB Host Mode Configuration
+        host_mode_enable_reg = 1'b0;  // Start with host mode disabled
+        enum_start_reg = 1'b0;
+        target_device_addr = 7'd1;    // Assign address 1 to enumerated device
+        target_config_num = 8'd1;     // Select first configuration
     end
+    
+    // USB Host Mode Control Logic
+    assign host_mode_enable = host_mode_enable_reg;
+    assign enum_start = enum_start_reg;
+    assign enum_device_addr = target_device_addr;
+    assign enum_config_num = target_config_num;
+    assign sof_enable = host_mode_enable & enum_done;  // Enable SOF after enumeration
+    assign disconnect_enable = host_mode_enable;       // Enable disconnect detection when host mode active
+    
+    // Auto-reset and re-enumeration on disconnect
+    reg prev_disconnect;
+    reg auto_enum_trigger;
+    
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            prev_disconnect <= 1'b0;
+            auto_enum_trigger <= 1'b0;
+        end else begin
+            prev_disconnect <= disconnect_detected;
+            
+            // Trigger enumeration when device connects (after disconnect or initial connect)
+            if (device_connected && !prev_disconnect && host_mode_enable && !enum_done) begin
+                auto_enum_trigger <= 1'b1;
+            end else if (enum_done || !device_connected) begin
+                auto_enum_trigger <= 1'b0;
+            end
+        end
+    end
+    
+    // Automatic keyboard and mouse engine startup after enumeration
+    reg kbd_enable_reg;
+    reg [6:0] kbd_addr_reg;
+    reg [3:0] kbd_endp_reg;
+    reg [10:0] kbd_max_pkt_reg;
+    reg [7:0] kbd_interval_reg;
+    
+    reg mouse_enable_reg;
+    reg [6:0] mouse_addr_reg;
+    reg [3:0] mouse_endp_reg;
+    reg [10:0] mouse_max_pkt_reg;
+    reg [7:0] mouse_interval_reg;
+    
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            kbd_enable_reg <= 1'b0;
+            kbd_addr_reg <= 7'd0;
+            kbd_endp_reg <= 4'd0;
+            kbd_max_pkt_reg <= 11'd0;
+            kbd_interval_reg <= 8'd0;
+            mouse_enable_reg <= 1'b0;
+            mouse_addr_reg <= 7'd0;
+            mouse_endp_reg <= 4'd0;
+            mouse_max_pkt_reg <= 11'd0;
+            mouse_interval_reg <= 8'd0;
+        end else begin
+            // When enumeration completes and we find an endpoint, enable the appropriate engine
+            if (enum_done && parser_ep_valid) begin
+                // Check protocol: 0x01 = keyboard, 0x02 = mouse
+                if (parser_iface_protocol == 8'h01) begin
+                    // Keyboard detected
+                    kbd_enable_reg <= 1'b1;
+                    kbd_addr_reg <= enum_device_addr;
+                    kbd_endp_reg <= parser_ep_addr[3:0];
+                    kbd_max_pkt_reg <= parser_ep_max_packet;
+                    kbd_interval_reg <= parser_ep_interval;
+                end
+                else if (parser_iface_protocol == 8'h02) begin
+                    // Mouse detected
+                    mouse_enable_reg <= 1'b1;
+                    mouse_addr_reg <= enum_device_addr;
+                    mouse_endp_reg <= parser_ep_addr[3:0];
+                    mouse_max_pkt_reg <= parser_ep_max_packet;
+                    mouse_interval_reg <= parser_ep_interval;
+                end
+            end
+            // Disable on reset, enumeration start, or disconnect
+            else if (enum_start_reg || bus_reset_req || disconnect_detected) begin
+                kbd_enable_reg <= 1'b0;
+                mouse_enable_reg <= 1'b0;
+            end
+        end
+    end
+    
+    assign kbd_enable = kbd_enable_reg;
+    assign kbd_device_addr = kbd_addr_reg;
+    assign kbd_endpoint = kbd_endp_reg;
+    assign kbd_max_packet_size = kbd_max_pkt_reg;
+    assign kbd_poll_interval = kbd_interval_reg;
+    
+    assign mouse_enable = mouse_enable_reg;
+    assign mouse_device_addr = mouse_addr_reg;
+    assign mouse_endpoint = mouse_endp_reg;
+    assign mouse_max_packet_size = mouse_max_pkt_reg;
+    assign mouse_poll_interval = mouse_interval_reg;
+    
+    // =======================================================================
+    // UART0 Interface to SAMD51 (USB CDC-ACM Bridge)
+    // =======================================================================
+    // This provides UART0→SAMD51→USB connectivity, eliminating the need for
+    // external UART adapters. The SAMD51 Apollo firmware bridges this to
+    // USB CDC-ACM, appearing as /dev/ttyACM0 (Linux) or COM port (Windows).
+    
+    // Injection interface signals
+    wire [63:0] inject_kbd_report;
+    wire        inject_kbd_valid;
+    wire        inject_kbd_ack;
+    wire [39:0] inject_mouse_report;
+    wire        inject_mouse_valid;
+    wire        inject_mouse_ack;
+    wire [31:0] filter_mask;
+    wire        mode_proxy_uart;
+    wire        mode_host_uart;
+    
+    // Merged HID reports (after injection)
+    wire [63:0] merged_kbd_report;
+    wire        merged_kbd_valid;
+    wire [39:0] merged_mouse_report;
+    wire        merged_mouse_valid;
+    
+    uart_interface #(
+        .CLK_FREQ(60_000_000),
+        .BAUD_RATE(115200),
+        .TX_FIFO_DEPTH(256),
+        .RX_FIFO_DEPTH(256)
+    ) uart0 (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // Physical UART pins to SAMD51
+        .uart_rx(uart0_rx),
+        .uart_tx(uart0_tx),
+        
+        // Data interface
+        .tx_data(uart_tx_data),
+        .tx_valid(uart_tx_valid),
+        .tx_ready(uart_tx_ready),
+        
+        .rx_data(uart_rx_data),
+        .rx_valid(uart_rx_valid),
+        .rx_ready(uart_rx_ready),
+        
+        // Status
+        .tx_busy(uart_tx_busy),
+        .rx_error(uart_rx_error),
+        .tx_fifo_used(uart_tx_fifo_used),
+        .rx_fifo_used(uart_rx_fifo_used)
+    );
+    
+    // UART debug output generator
+    // Automatically sends status updates via UART0→USB
+    uart_debug_output uart_debug (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // UART TX interface
+        .uart_tx_data(uart_tx_data),
+        .uart_tx_valid(uart_tx_valid),
+        .uart_tx_ready(uart_tx_ready),
+        
+        // Status inputs for debug messages
+        .proxy_enable(proxy_enable),
+        .host_mode_enable(host_mode_enable),
+        .enum_done(enum_done),
+        .kbd_active(kbd_active),
+        .mouse_active(mouse_active),
+        .kbd_report_valid(kbd_report_valid),
+        .mouse_report_valid(mouse_report_valid),
+        .kbd_report_data(kbd_report_data),
+        .mouse_report_data(mouse_report_data),
+        .packet_count(packet_count),
+        .error_count(error_count),
+        .buffer_overflow(buffer_overflow)
+    );
+    
+    // =======================================================================
+    // UART Command Processor
+    // =======================================================================
+    // Parses commands from SAMD51 for HID report injection and control
+    
+    uart_command_processor cmd_processor (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // UART RX interface
+        .uart_rx_data(uart_rx_data),
+        .uart_rx_valid(uart_rx_valid),
+        .uart_rx_ready(uart_rx_ready),
+        
+        // UART TX interface (for responses - not used yet)
+        .uart_tx_data(),  // Unused - debug output handles TX
+        .uart_tx_valid(),
+        .uart_tx_ready(1'b0),
+        
+        // Keyboard injection
+        .inject_kbd_report(inject_kbd_report),
+        .inject_kbd_valid(inject_kbd_valid),
+        .inject_kbd_ack(inject_kbd_ack),
+        
+        // Mouse injection
+        .inject_mouse_report(inject_mouse_report),
+        .inject_mouse_valid(inject_mouse_valid),
+        .inject_mouse_ack(inject_mouse_ack),
+        
+        // Control outputs
+        .filter_mask(filter_mask),
+        .mode_proxy(mode_proxy_uart),
+        .mode_host(mode_host_uart)
+    );
+    
+    // =======================================================================
+    // USB Injection Multiplexer
+    // =======================================================================
+    // Merges real HID reports with injected reports from SAMD51
+    
+    usb_injection_mux injection_mux (
+        .clk(clk),
+        .rst_n(rst_n),
+        
+        // Real reports from USB host
+        .host_kbd_report(kbd_report_data),
+        .host_kbd_valid(kbd_report_valid),
+        .host_mouse_report(mouse_report_data),
+        .host_mouse_valid(mouse_report_valid),
+        
+        // Injected reports from SAMD51
+        .inject_kbd_report(inject_kbd_report),
+        .inject_kbd_valid(inject_kbd_valid),
+        .inject_kbd_ack(inject_kbd_ack),
+        .inject_mouse_report(inject_mouse_report),
+        .inject_mouse_valid(inject_mouse_valid),
+        .inject_mouse_ack(inject_mouse_ack),
+        
+        // Merged output (to USB device or monitoring)
+        .out_kbd_report(merged_kbd_report),
+        .out_kbd_valid(merged_kbd_valid),
+        .out_mouse_report(merged_mouse_report),
+        .out_mouse_valid(merged_mouse_valid)
+    );
+    
+    // USB Host Mode Status LEDs (Cynthion has 6 FPGA LEDs: 0-5)
+    // LED[5:3] = USB Host Status
+    // LED[2:0] = Proxy/Monitor Status
+    wire [5:0] status_leds;
+    assign status_leds[5] = host_mode_enable & device_connected;    // Host mode + device connected
+    assign status_leds[4] = enum_done;                              // Enumeration complete
+    assign status_leds[3] = kbd_active || mouse_active;             // HID device active
+    assign status_leds[2] = kbd_report_valid || mouse_report_valid; // New HID report
+    assign status_leds[1] = proxy_enable;                           // Proxy active
+    assign status_leds[0] = buffer_overflow;                        // Error indicator
     
     // Debug interface module
     debug_interface debug_if (
@@ -650,9 +1341,9 @@ module top (
         
         // Status Inputs
         .proxy_active(proxy_enable),
-        .host_connected(host_conn_detect),
+        .host_connected(host_conn_detect | enum_done),  // Host connected or enumeration done
         .device_connected(device_conn_detect),
-        .host_speed(host_conn_speed),
+        .host_speed(detected_speed),                     // Use detected speed from reset controller
         .device_speed(device_conn_speed),
         .buffer_overflow(buffer_overflow),
         .buffer_used(buffer_used),
@@ -675,18 +1366,17 @@ module top (
         .loopback_enable()
     );
     
-    // Status LEDs - use debug LED values when available, otherwise defaults
-    assign led = debug_leds;
+    // Status LEDs - output to hardware
+    assign led = status_leds;
     
     // Debug outputs
     assign debug = debug_probe[3:0];  // Use the first 4 bits of debug probe
     
-    // Connect debug interface to USB control path (simplified for clarity)
-    // In a real implementation, this would involve proper USB endpoints
-    assign debug_cmd = phy0_rx_data;
-    assign debug_cmd_valid = phy0_rx_valid;
-    assign phy0_tx_data = debug_resp;
-    assign phy0_tx_valid = debug_resp_valid;
+    // Debug interface now uses UART0→USB instead of direct USB PHY0 access
+    // This provides cleaner host integration through SAMD51 CDC-ACM bridge
+    assign debug_cmd = uart_rx_data;
+    assign debug_cmd_valid = uart_rx_valid;
+    // Debug response is handled by uart_debug_output module
     
     // Error counter
     reg [15:0] internal_error_count;

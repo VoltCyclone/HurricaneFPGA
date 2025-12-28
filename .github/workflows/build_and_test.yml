@@ -1,4 +1,4 @@
-name: Build and Test (Rust Native + Amaranth Docker)
+name: Build and Test (Makefile + Docker)
 
 on:
   push:
@@ -10,6 +10,8 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'Dockerfile'
+      - 'Makefile'
+      - 'deploy.sh'
   workflow_dispatch:
 
 jobs:
@@ -19,67 +21,49 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Native Rust Setup
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
+      - name: Cache Docker layers
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-docker-${{ hashFiles('**/Dockerfile') }}
+          restore-keys: |
+            ${{ runner.os }}-docker-
 
-      # --- Docker Build for Amaranth Env ---
-      - name: Build Docker Image for Amaranth Env
-        id: docker_build
+      # --- Build using Makefile ---
+      - name: Build Docker Image and Extract Artifacts
+        id: make_build
         run: |
-          # Use the simplified Dockerfile
-          docker build -t amaranth-cynthion-builder:latest .
-          echo "Amaranth/LUNA Docker image built."
+          echo "Building with Makefile..."
+          make build
+          echo "Build complete!"
 
-      # --- Amaranth Steps *inside* Docker
-      - name: Run Amaranth Offline Elaboration Check (Docker)
+      - name: Verify Build Artifacts
         run: |
-          echo "Running offline elaboration check inside Docker..."
-          docker run --rm -v ${{ github.workspace }}:/work -w /work amaranth-cynthion-builder:latest
+          echo "Verifying build artifacts..."
+          ls -lh build/binaries/ || echo "No binaries found"
+          ls -lh build/gateware/ || echo "No gateware found"
+          if [ -f build/build-info.txt ]; then
+            echo "Build Info:"
+            cat build/build-info.txt
+          fi
+
+      # --- Run Tests inside Docker ---
+      - name: Run Tests
+        run: make test
         continue-on-error: true
-        # Note: Docker might fail toward the end, as long as it gets to Apollo its fine
-
-      - name: Install system dependencies for Rust build
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
-
-      # --- Native Rust Steps ---
-      - name: Build Rust project (Release)
-        if: hashFiles('Cargo.toml') != ''
-        run: |
-          echo "Building Rust project natively..."
-          cargo build --release
-
-      - name: Test Rust project
-        if: hashFiles('Cargo.toml') != ''
-        run: |
-          echo "Testing Rust project natively..."
-          cargo test --lib inject version util || echo "Ignoring test failures for now"
 
       - name: Generate code coverage (Tarpaulin)
-        if: hashFiles('Cargo.toml') != ''
         run: |
-          echo "Generating code coverage natively..."
-          # Need to install tarpaulin on the runner if not cached
-          if ! command -v cargo-tarpaulin &> /dev/null; then
-              echo "Installing cargo-tarpaulin on runner..."
-               # Adjust installation based on runner OS if needed, assume Linux/Cargo install works
-              cargo install cargo-tarpaulin 
+          echo "Generating code coverage inside Docker..."
+          docker run --rm -v ${{ github.workspace }}:/work amaranth-cynthion \
+            sh -c "cargo install cargo-tarpaulin && \
+                   cargo tarpaulin --out Xml --output-dir coverage \
+                   --exclude-files src/usb.rs \
+                   --verbose -- --test-threads=1" || echo "Tarpaulin failed, proceeding..."
+          # Copy coverage out if it exists
+          if [ -f coverage/cobertura.xml ]; then
+            echo "Coverage report generated successfully"
           fi
-          # Run tarpaulin natively
-          cargo tarpaulin --out Xml --output-dir coverage \
-              --exclude-files src/usb.rs --packages packetry_injector \
-              --verbose -- --test-threads=1 || echo "Tarpaulin failed, proceeding..."
 
       - name: Upload coverage report artifact
         if: hashFiles('Cargo.toml') != '' && hashFiles('coverage/cobertura.xml') != ''
@@ -101,29 +85,17 @@ jobs:
       - name: Package Artifacts
         id: package
         run: |
-          ARTIFACT_DIR="${{ github.workspace }}/artifacts"
-          mkdir -p ${ARTIFACT_DIR}
-
-          echo "Packaging artifacts..."
-
-          # Copy the Rust binary (created natively)
-          if [ -f target/release/packetry_injector ]; then
-             cp target/release/packetry_injector ${ARTIFACT_DIR}/
-             echo "- Added packetry_injector (Rust Binary)"
-          elif ls target/release/* &> /dev/null && [[ ! -d target/release/deps ]]; then
-             find target/release -maxdepth 1 -type f -executable -exec cp {} ${ARTIFACT_DIR}/ \;
-             echo "- Added other Rust release binaries"
-          else
-             echo "WARN: No Rust release binary found to package."
-          fi
-
+          echo "Artifacts are already in build/ directory from make build"
           echo "Packaged files:"
-          ls -l ${ARTIFACT_DIR}/ || echo "No files packaged."
-          echo "artifact_path=${ARTIFACT_DIR}" >> $GITHUB_OUTPUT
+          find build/ -type f -ls
+          echo "artifact_path=build" >> $GITHUB_OUTPUT
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: build-artifacts-${{ github.run_number }}
-          path: ${{ steps.package.outputs.artifact_path }}
+          path: |
+            build/binaries/
+            build/gateware/
+            build/build-info.txt
           if-no-files-found: warn

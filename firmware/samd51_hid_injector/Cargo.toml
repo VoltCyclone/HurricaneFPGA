@@ -1,0 +1,34 @@
+[package]
+name = "samd51_hid_injector"
+version = "0.1.0"
+authors = ["HurricaneFPGA Contributors"]
+edition = "2021"
+license = "BSD-3-Clause"
+
+[dependencies]
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+panic-halt = "0.2"
+embedded-hal = "0.2"
+
+# SAMD51 Hardware Abstraction Layer
+atsamd-hal = { version = "0.16", features = ["samd51j", "usb", "unproven"] }
+
+# USB Device Stack
+usb-device = "0.2"
+usbd-serial = "0.1"
+
+# No-std collections
+heapless = "0.8"
+
+[profile.release]
+opt-level = "z"      # Optimize for size
+lto = true           # Link-time optimization
+codegen-units = 1    # Better optimization
+debug = true         # Keep debug symbols for debugging
+panic = "abort"      # Smaller binary
+
+[profile.dev]
+opt-level = 1        # Some optimization for dev builds
+debug = true
+panic = "abort"      # Required for no_std
