@@ -74,9 +74,8 @@ impl Command {
         idx += 7;
         frame[idx] = hex_digit(cksum >> 4);
         frame[idx+1] = hex_digit(cksum & 0x0F);
-        idx += 2;
-        frame[idx..idx+2].copy_from_slice(b"]\n");
-        idx += 2;
+        let _idx = idx + 2;
+        frame[_idx.._idx+2].copy_from_slice(b"]\n");
         
         frame
     }
@@ -775,6 +774,7 @@ impl CommandProcessor {
     
     /// Handle descriptor.add command - DEPRECATED, use FPGA auto-forward instead
     /// Kept for manual testing only
+    #[allow(dead_code)]
     fn handle_descriptor_add(&mut self, line: &[u8], descriptor_cache: &mut DescriptorCache) -> CommandType {
         use core::fmt::Write;
         

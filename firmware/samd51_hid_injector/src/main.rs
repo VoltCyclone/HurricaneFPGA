@@ -15,7 +15,6 @@ use hal::prelude::*;
 use usb_device::prelude::*;
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 use usb_device::bus::UsbBusAllocator;
-use core::fmt::Write;
 use heapless;
 
 mod uart;
@@ -231,6 +230,10 @@ fn main() -> ! {
                 }
                 Ok(0) => {
                     // No data available - this is normal
+                }
+                Ok(_) => {
+                    // Any other Ok count (including 1+) but count is 0, should not happen
+                    // This handles the Ok(1_usize..) case
                 }
                 Err(UsbError::WouldBlock) => {
                     // Would block - no data ready
