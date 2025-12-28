@@ -301,23 +301,185 @@ For complete USB host mode documentation, see:
 
 ---
 
-## Development
+## Architecture
 
-```bash
-# Rust
-cargo build && cargo test
+### System Overview
 
-# Gateware (needs Python env)
-python src/backend/top.py
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Cynthion FPGA (ECP5)                         │
+│                                                                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │                     USB Host Mode                            │   │
+│  │  ┌──────────────┐  ┌───────────────┐  ┌──────────────┐     │   │
+│  │  │ Reset Ctrl   │  │  Enumerator   │  │Transaction   │     │   │
+│  │  │              │  │               │  │Engine        │     │   │
+│  │  └──────┬───────┘  └───────┬───────┘  └──────┬───────┘     │   │
+│  │         │                  │                  │             │   │
+│  │         └──────────┬───────┴──────────────────┘             │   │
+│  │                    ▼                                         │   │
+│  │         ┌─────────────────────────┐                         │   │
+│  │         │  USB Host Arbiter       │  Priority-based TX      │   │
+│  │         │  (PHY2 TX Multiplexer)  │  signal multiplexing    │   │
+│  │         └─────────┬───────────────┘                         │   │
+│  │                   │                                          │   │
+│  │         ┌─────────▼───────────────┐                         │   │
+│  │         │  Token Request Arbiter  │  Request arbitration    │   │
+│  │         │  (Token Generator Mux)  │  for shared resources   │   │
+│  │         └─────────┬───────────────┘                         │   │
+│  │                   ▼                                          │   │
+│  │         ┌──────────────────┐                                │   │
+│  │         │  Token Generator │                                │   │
+│  │         └──────────────────┘                                │   │
+│  │  ┌──────────────┐  ┌──────────────┐                        │   │
+│  │  │ HID Keyboard │  │  HID Mouse   │                        │   │
+│  │  │   Engine     │  │   Engine     │                        │   │
+│  │  └──────────────┘  └──────────────┘                        │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │                   USB Proxy/Monitor                          │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌──────────────┐          │   │
+│  │  │USB Monitor │  │Packet Proxy│  │Buffer Manager│          │   │
+│  │  │  (PHY0/1)  │  │            │  │   (32KB)     │          │   │
+│  │  └────────────┘  └────────────┘  └──────────────┘          │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                       │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │                    UART Interface                            │   │
+│  │  UART0 (Built-in USB CDC-ACM) → Status & Debug Output      │   │
+│  │  PMOD A → Command Input (Legacy)                            │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+         │                    │                      │
+         ▼                    ▼                      ▼
+    PHY0 (J1)            PHY1 (J3)             PHY2 (J2)
+  Device Side         Control/Monitor         Host Side
 ```
 
-### Coverage
+### USB Host Arbitration Architecture
+
+The HDL implementation uses a dual-arbiter architecture to manage multiple USB host controllers:
+
+#### 1. USB Host Arbiter (PHY TX Multiplexer)
+**Purpose**: Multiplexes UTMI TX signals from multiple host controllers to PHY2
+
+**Priority Order** (Highest to Lowest):
+1. **Reset Controller** - Handles bus reset and speed detection
+2. **Enumerator** - Manages device enumeration sequence
+3. **Transaction Engine** - Executes USB transactions (SETUP/IN/OUT)
+4. **Protocol Handler** - Handles protocol-level responses
+5. **Token Generator** - Sends USB token packets
+6. **SOF Generator** - Generates Start-of-Frame packets
+
+**Key Features**:
+- Combinatorial priority-based selection
+- Active signal gating for priority control
+- Separate TX data/valid wires per module
+- Single unified output to PHY
+
+#### 2. Token Request Arbiter
+**Purpose**: Arbitrates token generator requests from multiple controllers
+
+**Priority Order** (Highest to Lowest):
+1. **Enumerator** - Enumeration must complete without interruption
+2. **Transaction Engine** - Normal data transfers
+3. **Keyboard Engine** - Periodic polling (lowest priority)
+
+**Key Features**:
+- Request-level arbitration (not data path)
+- Shared resource management for token generator
+- Prevents conflicting token requests
+- Maintains proper USB timing
+
+### Signal Flow
+
+1. **USB Host Operation**:
+   - Controller generates TX data on dedicated wires
+   - Controller asserts active signal
+   - USB Host Arbiter selects highest priority active controller
+   - Selected TX data forwarded to PHY2
+
+2. **Token Generation**:
+   - Controller asserts token request signals
+   - Token Request Arbiter selects highest priority request
+   - Token Generator processes unified request
+   - Token completion signaled to all controllers
+
+3. **Data Reception**:
+   - PHY2 RX data broadcast to all controllers
+   - Each controller processes relevant packets
+   - Protocol handler manages handshakes
+
+### Module Descriptions
+
+**USB Host Components**:
+- `usb_reset_controller.v` - Bus reset, speed detection, connection monitoring
+- `usb_enumerator.v` - Complete enumeration sequence (GetDescriptor, SetAddress, SetConfig)
+- `usb_transaction_engine.v` - SETUP/IN/OUT transaction management
+- `usb_token_generator.v` - USB token packet generation (IN/OUT/SETUP/SOF)
+- `usb_sof_generator.v` - Start-of-Frame timing and frame number tracking
+- `usb_protocol_handler.v` - USB protocol state tracking and validation
+- `usb_host_arbiter.v` - **NEW**: PHY TX signal multiplexer
+- `usb_token_arbiter.v` - **NEW**: Token request arbitration
+
+**HID Engines**:
+- `usb_hid_keyboard_engine.v` - Keyboard interrupt endpoint polling
+- `usb_hid_mouse_engine.v` - Mouse interrupt endpoint polling
+
+**Proxy/Monitor**:
+- `usb_monitor.v` - Packet capture and analysis
+- `packet_proxy.v` - Packet forwarding and modification
+- `buffer_manager.v` - 32KB ring buffer with dual-port BRAM
+
+**Supporting**:
+- `uart_interface.v` - UART0 CDC-ACM interface for debug output
+- `debug_interface.v` - Status register access
+- `timestamp_generator.v` - Microsecond-precision timestamping
+
+### Build System
+
+The HDL uses Yosys for synthesis with three optimization levels:
 
 ```bash
-cargo install cargo-tarpaulin
-cargo tarpaulin --out Html --output-dir coverage \
-                --packages packetry_injector
-open coverage/tarpaulin-report.html
+make synth-fast   # ~30s - Quick iteration
+make synth        # ~1-2min - Balanced (recommended)
+make synth-max    # ~3-5min - Maximum optimization
+```
+
+See `HDL/architecture.md` for detailed module documentation.
+
+---
+
+## Development
+
+### Building HDL
+
+```bash
+cd HDL
+
+# Validate Verilog syntax
+make validate
+
+# Synthesize (fast iteration)
+make synth-fast
+
+# Full build with place & route
+make all
+
+# Flash to device
+cd tools && ./flash_cynthion.sh
+```
+
+### Building Firmware
+
+```bash
+# Rust CLI (Host PC)
+cargo build --release
+
+# SAMD51 Firmware (Cross-compile for ARM)
+cd firmware/samd51_hid_injector
+cargo build --release
 ```
 
 ### Testing
