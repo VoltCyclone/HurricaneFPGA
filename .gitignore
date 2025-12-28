@@ -37,6 +37,24 @@ build/binaries/
 build/firmware/
 build/build-info.txt
 
+# HDL/FPGA build artifacts
+*.bit
+*.bin
+*.json
+HDL/tools/build/logs/
+HDL/tools/build/*.ys
+*.rpt
+*.tim
+*.pnr
+
+# Verilog testbench outputs
+HDL/hardware/testbenches/*.vcd
+HDL/hardware/testbenches/*.lxt
+HDL/hardware/testbenches/*.fst
+HDL/hardware/testbenches/tb_*
+HDL/hardware/testbenches/*.out
+!HDL/hardware/testbenches/*.v
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
@@ -178,3 +196,34 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Rust build artifacts
+target/
+**/*.rs.bk
+Cargo.lock
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+.directory
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editor/IDE
+*.swp
+*.swo
+*.swn
+.idea/
+*.iml
+
+# Temporary files
+*.tmp
+*.bak
+*.backup

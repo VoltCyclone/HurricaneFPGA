@@ -52,9 +52,20 @@ htmlcov/
 .cache/
 
 # HDL build outputs (will be generated in container)
-HDL/tools/build/
+HDL/tools/build/logs/
+*.bit
+*.bin
+*.rpt
+*.tim
+*.pnr
+
+# Testbench outputs (not needed for build)
 HDL/hardware/testbenches/*.vcd
+HDL/hardware/testbenches/*.lxt
+HDL/hardware/testbenches/*.fst
+HDL/hardware/testbenches/tb_usb_*
 HDL/hardware/testbenches/*.out
+HDL/hardware/testbenches/COVERAGE_IMPROVEMENTS.md
 
 # Deployment script (not needed inside container)
 deploy.sh
@@ -62,3 +73,18 @@ deploy.sh
 # Local configuration
 .env
 .env.local
+
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux specific
+*~
+.directory
+
+# Windows specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
