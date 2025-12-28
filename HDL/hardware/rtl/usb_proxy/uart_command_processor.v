@@ -66,10 +66,20 @@ module uart_command_processor (
     reg [3:0]  parse_state;
     reg [7:0]  cmd_code;
     reg [15:0] cmd_length;
-    reg [7:0]  cmd_payload [127:0];  // Max 128 bytes payload
+    // Note: This buffer has scattered multi-index reads during command execution
+    // Block RAM inference may not work perfectly, but we add the attribute to help
+    (* syn_ramstyle = "block_ram" *) reg [7:0]  cmd_payload [127:0];
+    // Registered reads as individual registers (not array)
+    reg [7:0]  cmd_payload_read_0, cmd_payload_read_1, cmd_payload_read_2, cmd_payload_read_3;
+    reg [7:0]  cmd_payload_read_4, cmd_payload_read_5, cmd_payload_read_6, cmd_payload_read_7;
     reg [7:0]  payload_index;
     reg [7:0]  checksum_calc;
     reg [7:0]  checksum_recv;
+    
+    // Memory write signals for BRAM inference
+    reg        cmd_write_enable;
+    reg [6:0]  cmd_write_addr;
+    reg [7:0]  cmd_write_data;
     
     // Bracket matching
     reg        in_frame;
@@ -78,6 +88,21 @@ module uart_command_processor (
     // Command execution flags
     reg        cmd_valid;
     reg        cmd_error;
+    
+    // CRITICAL: Dual-port BRAM inference pattern
+    always @(posedge clk) begin
+        if (cmd_write_enable)
+            cmd_payload[cmd_write_addr] <= cmd_write_data;
+        // Registered reads for command execution (individual registers)
+        cmd_payload_read_0 <= cmd_payload[0];
+        cmd_payload_read_1 <= cmd_payload[1];
+        cmd_payload_read_2 <= cmd_payload[2];
+        cmd_payload_read_3 <= cmd_payload[3];
+        cmd_payload_read_4 <= cmd_payload[4];
+        cmd_payload_read_5 <= cmd_payload[5];
+        cmd_payload_read_6 <= cmd_payload[6];
+        cmd_payload_read_7 <= cmd_payload[7];
+    end
     
     // =======================================================================
     // Command Parser State Machine
@@ -96,11 +121,15 @@ module uart_command_processor (
             prev_char <= 8'd0;
             cmd_valid <= 1'b0;
             cmd_error <= 1'b0;
+            cmd_write_enable <= 1'b0;
+            cmd_write_addr <= 7'd0;
+            cmd_write_data <= 8'd0;
         end else begin
             // Default: ready to accept UART data
             uart_rx_ready <= 1'b1;
             cmd_valid <= 1'b0;
             cmd_error <= 1'b0;
+            cmd_write_enable <= 1'b0;
             
             case (parse_state)
                 STATE_IDLE: begin
@@ -170,7 +199,9 @@ module uart_command_processor (
                         end else begin
                             // Store payload byte
                             if (payload_index < 128) begin
-                                cmd_payload[payload_index] <= uart_rx_data;
+                                cmd_write_enable <= 1'b1;
+                                cmd_write_addr <= payload_index[6:0];
+                                cmd_write_data <= uart_rx_data;
                                 checksum_calc <= checksum_calc + uart_rx_data;
                                 payload_index <= payload_index + 1'b1;
                                 
@@ -251,14 +282,14 @@ module uart_command_processor (
                         // Inject keyboard report (8 bytes)
                         if (cmd_length >= 8) begin
                             inject_kbd_report <= {
-                                cmd_payload[7],
-                                cmd_payload[6],
-                                cmd_payload[5],
-                                cmd_payload[4],
-                                cmd_payload[3],
-                                cmd_payload[2],
-                                cmd_payload[1],
-                                cmd_payload[0]
+                                cmd_payload_read_7,
+                                cmd_payload_read_6,
+                                cmd_payload_read_5,
+                                cmd_payload_read_4,
+                                cmd_payload_read_3,
+                                cmd_payload_read_2,
+                                cmd_payload_read_1,
+                                cmd_payload_read_0
                             };
                             inject_kbd_valid <= 1'b1;
                         end
@@ -268,11 +299,11 @@ module uart_command_processor (
                         // Inject mouse report (5 bytes)
                         if (cmd_length >= 5) begin
                             inject_mouse_report <= {
-                                cmd_payload[4],
-                                cmd_payload[3],
-                                cmd_payload[2],
-                                cmd_payload[1],
-                                cmd_payload[0]
+                                cmd_payload_read_4,
+                                cmd_payload_read_3,
+                                cmd_payload_read_2,
+                                cmd_payload_read_1,
+                                cmd_payload_read_0
                             };
                             inject_mouse_valid <= 1'b1;
                         end
@@ -282,10 +313,10 @@ module uart_command_processor (
                         // Set filter mask (4 bytes)
                         if (cmd_length >= 4) begin
                             filter_mask <= {
-                                cmd_payload[3],
-                                cmd_payload[2],
-                                cmd_payload[1],
-                                cmd_payload[0]
+                                cmd_payload_read_3,
+                                cmd_payload_read_2,
+                                cmd_payload_read_1,
+                                cmd_payload_read_0
                             };
                         end
                     end
@@ -293,8 +324,8 @@ module uart_command_processor (
                     CMD_SET_MODE: begin
                         // Set mode (1 byte: bit 0 = proxy, bit 1 = host)
                         if (cmd_length >= 1) begin
-                            mode_proxy <= cmd_payload[0][0];
-                            mode_host <= cmd_payload[0][1];
+                            mode_proxy <= cmd_payload_read_0[0];
+                            mode_host <= cmd_payload_read_0[1];
                         end
                     end
                     

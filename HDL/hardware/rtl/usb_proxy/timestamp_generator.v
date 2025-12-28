@@ -187,18 +187,15 @@ module timestamp_generator (
     always @(posedge clk_high or negedge rst_n) begin
         if (!rst_n) begin
             high_res_counter <= 64'd0;
+        end else if (reset_counter) begin
+            // Reset takes priority
+            high_res_counter <= 64'd0;
+        end else if (sync_enable && sync_pulse) begin
+            // External synchronization for high-res counter
+            high_res_counter <= sync_value;
         end else if (counter_enable) begin
             // Simple free-running counter at high speed
             high_res_counter <= high_res_counter + 1'b1;
-        end
-        
-        if (reset_counter) begin
-            high_res_counter <= 64'd0;
-        end
-        
-        // External synchronization for high-res counter
-        if (sync_enable && sync_pulse) begin
-            high_res_counter <= sync_value;
         end
     end
     

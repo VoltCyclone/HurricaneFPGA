@@ -96,13 +96,60 @@ docker-shell: ## Open a shell inside the Docker container
 		$(IMAGE_NAME) \
 		/bin/bash
 
-flash-hdl: ## Flash the HDL implementation to Cynthion
+flash-hdl: compile-hdl ## Flash the HDL implementation to Cynthion
 	@echo "$(CYAN)Flashing HDL bitstream...$(NC)"
-	cd HDL/tools && ./flash_cynthion.sh
+	@if [ -f HDL/tools/build/top.bit ]; then \
+		cd HDL/tools && ./flash_cynthion.sh -b build/top.bit; \
+	else \
+		echo "$(RED)Error: Bitstream not found. Compilation may have failed.$(NC)"; \
+		exit 1; \
+	fi
 
-compile-hdl: ## Compile HDL bitstream
+flash-hdl-fast: compile-hdl-fast ## Fast compile and flash HDL
+	@echo "$(CYAN)Flashing HDL bitstream...$(NC)"
+	@if [ -f HDL/tools/build/top.bit ]; then \
+		cd HDL/tools && ./flash_cynthion.sh -b build/top.bit; \
+	else \
+		echo "$(RED)Error: Bitstream not found. Compilation may have failed.$(NC)"; \
+		exit 1; \
+	fi
+
+hdl-clean: ## Clean HDL build artifacts
+	@echo "$(YELLOW)Cleaning HDL build...$(NC)"
+	cd HDL && $(MAKE) clean
+
+flash-samd51: ## Flash the SAMD51 firmware to Cynthion
+	@echo "$(CYAN)Flashing SAMD51 firmware...$(NC)"
+	@if [ ! -f $(BUILD_DIR)/firmware/samd51_hid_injector ]; then \
+		echo "$(YELLOW)Firmware not found, deploying from Docker image...$(NC)"; \
+		$(MAKE) deploy; \
+	fi
+	@if [ -f $(BUILD_DIR)/firmware/samd51_hid_injector ]; then \
+		if command -v dfu-util >/dev/null 2>&1; then \
+			echo "$(YELLOW)Put Cynthion into DFU mode (hold PROGRAM button, press RESET)$(NC)"; \
+			read -p "Press Enter when ready..." _; \
+			dfu-util -d 1d50:615c -a 0 -D $(BUILD_DIR)/firmware/samd51_hid_injector; \
+			echo "$(GREEN)SAMD51 firmware flashed successfully!$(NC)"; \
+		else \
+			echo "$(RED)Error: dfu-util not found. Install it with: brew install dfu-util$(NC)"; \
+			exit 1; \
+		fi; \
+	else \
+		echo "$(RED)Error: Firmware binary not found. Run 'make build' first.$(NC)"; \
+		exit 1; \
+	fi
+
+compile-hdl: ## Compile HDL bitstream (balanced optimization)
 	@echo "$(CYAN)Compiling HDL bitstream...$(NC)"
-	cd HDL/tools && ./compile_bitstream.sh
+	cd HDL && $(MAKE) all
+
+compile-hdl-fast: ## Compile HDL bitstream (fast, for iteration)
+	@echo "$(CYAN)Compiling HDL bitstream (FAST mode)...$(NC)"
+	cd HDL && $(MAKE) fast
+
+compile-hdl-max: ## Compile HDL bitstream (maximum optimization, slow)
+	@echo "$(CYAN)Compiling HDL bitstream (MAX optimization)...$(NC)"
+	cd HDL && $(MAKE) max
 
 validate-hdl: ## Validate HDL before building
 	@echo "$(CYAN)Validating HDL...$(NC)"

@@ -88,3 +88,18 @@ DEFINE NET GROUP "sync_group" "reset_n" "reset_sync" "pll_locked";
 # Path Delay Constraints
 DEFINE DELAY GROUP "input_delay" "inputs";
 DEFINE DELAY GROUP "output_delay" "outputs";
+
+# Additional Timing Constraints for USB Proxy Performance
+# Input/Output delays relative to clk_60mhz
+INPUT_DELAY GROUP "inputs" 2.0 ns CLKPORT "clk_60mhz";
+OUTPUT_DELAY GROUP "outputs" 2.0 ns CLKPORT "clk_60mhz";
+
+# Maximum delay for critical USB paths (allow 12ns for 60MHz + routing)
+MAXDELAY FROM PORT "usb0_dp" TO PORT "usb1_dp" 12.0 ns;
+MAXDELAY FROM PORT "usb1_dp" TO PORT "usb2_dp" 12.0 ns;
+MAXDELAY FROM PORT "usb2_dp" TO PORT "usb0_dp" 12.0 ns;
+
+# Clock domain crossing false paths
+# If using multiple clock domains (60MHz and 120MHz), mark crossing paths
+# FREQUENCY PORT "pll_clk_120mhz" 120.000 MHz;
+# Note: CDC should be handled with proper synchronizers, not just false paths

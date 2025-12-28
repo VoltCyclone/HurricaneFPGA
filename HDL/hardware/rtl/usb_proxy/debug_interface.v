@@ -62,11 +62,17 @@ module debug_interface (
     localparam CMD_TRIGGER_CONFIG     = 8'h22;  // Configure trigger
     localparam CMD_VERSION            = 8'hF0;  // Get version information
     
-    // Response buffer
-    reg [7:0] response_buffer [15:0];
-    reg [3:0] response_length;
-    reg [3:0] response_index;
+    // Response buffer (small - use registers for speed)
+    reg [7:0] response_buffer [7:0];  // 8 bytes - too small for BRAM
+    reg [7:0] response_buffer_out;  // Registered read
+    reg [2:0] response_length;  // 3 bits for 0-7
+    reg [2:0] response_index;   // 3 bits for 0-7
     reg       sending_response;
+    
+    // Synchronous read
+    always @(posedge clk) begin
+        response_buffer_out <= response_buffer[response_index];
+    end
     
     // Version information
     localparam VERSION_MAJOR = 8'h01;
@@ -224,8 +230,8 @@ module debug_interface (
             // Response handling
             if (sending_response) begin
                 if (response_index < response_length) begin
-                    // Send next byte of response
-                    debug_resp <= response_buffer[response_index];
+                    // Send next byte of response (using registered read)
+                    debug_resp <= response_buffer_out;
                     debug_resp_valid <= 1'b1;
                     response_index <= response_index + 1'b1;
                 end else begin
@@ -235,6 +241,11 @@ module debug_interface (
                 end
             end
         end
+    end
+
+    // Synchronous read for block RAM inference
+    always @(posedge clk) begin
+        response_buffer_out <= response_buffer[response_index];
     end
 
     // Debug mode logic

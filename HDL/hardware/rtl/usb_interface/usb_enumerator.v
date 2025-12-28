@@ -125,13 +125,44 @@ module usb_enumerator (
     
     reg [4:0]  state;
     reg [31:0] timeout_counter;
-    reg [7:0]  rx_buffer[0:63];     // Buffer for received data
+    (* syn_ramstyle = "block_ram" *) reg [7:0]  rx_buffer[0:31];     // 32 bytes with BRAM attribute
     reg [7:0]  rx_count;
-    reg [7:0]  setup_packet[0:7];   // SETUP packet buffer
+    // Registered outputs for key indices
+    reg [7:0]  rx_buffer_7;
+    reg [7:0]  rx_buffer_8;
+    reg [7:0]  rx_buffer_9;
+    reg [7:0]  rx_buffer_10;
+    reg [7:0]  rx_buffer_11;
+    reg [63:0] setup_packet;        // SETUP packet buffer (packed)
+    wire [7:0] setup_byte0 = setup_packet[7:0];
+    wire [7:0] setup_byte1 = setup_packet[15:8];
+    wire [7:0] setup_byte2 = setup_packet[23:16];
+    wire [7:0] setup_byte3 = setup_packet[31:24];
+    wire [7:0] setup_byte4 = setup_packet[39:32];
+    wire [7:0] setup_byte5 = setup_packet[47:40];
+    wire [7:0] setup_byte6 = setup_packet[55:48];
+    wire [7:0] setup_byte7 = setup_packet[63:56];
     reg        data_pid;            // DATA0/DATA1 toggle
     reg [10:0] last_sof;
     reg [3:0]  retry_count;
     reg [7:0]  current_addr;        // Current device address (0 initially)
+    
+    // Memory write signals for BRAM inference
+    reg        rx_write_enable;
+    reg [7:0]  rx_write_addr;
+    reg [7:0]  rx_write_data;
+    
+    // CRITICAL: Dual-port BRAM inference pattern
+    // Read and write in same always block with separate ports
+    always @(posedge clk) begin
+        if (rx_write_enable)
+            rx_buffer[rx_write_addr] <= rx_write_data;
+        rx_buffer_7 <= rx_buffer[7];
+        rx_buffer_8 <= rx_buffer[8];
+        rx_buffer_9 <= rx_buffer[9];
+        rx_buffer_10 <= rx_buffer[10];
+        rx_buffer_11 <= rx_buffer[11];
+    end
     
     // SETUP packet construction
     task build_setup_get_descriptor;
@@ -139,42 +170,21 @@ module usb_enumerator (
         input [7:0] desc_index;
         input [15:0] length;
         begin
-            setup_packet[0] = 8'h80;        // bmRequestType: Device-to-Host, Standard, Device
-            setup_packet[1] = REQ_GET_DESCRIPTOR;
-            setup_packet[2] = desc_index;   // wValue low (index)
-            setup_packet[3] = desc_type;    // wValue high (type)
-            setup_packet[4] = 8'h00;        // wIndex low
-            setup_packet[5] = 8'h00;        // wIndex high
-            setup_packet[6] = length[7:0];  // wLength low
-            setup_packet[7] = length[15:8]; // wLength high
+            setup_packet = {length[15:8], length[7:0], 8'h00, 8'h00, desc_type, desc_index, REQ_GET_DESCRIPTOR, 8'h80};
         end
     endtask
     
     task build_setup_set_address;
         input [6:0] addr;
         begin
-            setup_packet[0] = 8'h00;        // bmRequestType: Host-to-Device, Standard, Device
-            setup_packet[1] = REQ_SET_ADDRESS;
-            setup_packet[2] = {1'b0, addr}; // wValue low (address)
-            setup_packet[3] = 8'h00;        // wValue high
-            setup_packet[4] = 8'h00;        // wIndex low
-            setup_packet[5] = 8'h00;        // wIndex high
-            setup_packet[6] = 8'h00;        // wLength low
-            setup_packet[7] = 8'h00;        // wLength high
+            setup_packet = {8'h00, 8'h00, 8'h00, 8'h00, 8'h00, {1'b0, addr}, REQ_SET_ADDRESS, 8'h00};
         end
     endtask
     
     task build_setup_set_config;
-        input [7:0] config;
+        input [7:0] config_value;
         begin
-            setup_packet[0] = 8'h00;        // bmRequestType: Host-to-Device, Standard, Device
-            setup_packet[1] = REQ_SET_CONFIGURATION;
-            setup_packet[2] = config;       // wValue low (configuration)
-            setup_packet[3] = 8'h00;        // wValue high
-            setup_packet[4] = 8'h00;        // wIndex low
-            setup_packet[5] = 8'h00;        // wIndex high
-            setup_packet[6] = 8'h00;        // wLength low
-            setup_packet[7] = 8'h00;        // wLength high
+            setup_packet = {8'h00, 8'h00, 8'h00, 8'h00, 8'h00, config_value, REQ_SET_CONFIGURATION, 8'h00};
         end
     endtask
     
@@ -182,14 +192,7 @@ module usb_enumerator (
         input [7:0] protocol;  // 0=Boot Protocol, 1=Report Protocol
         input [7:0] interface_num;
         begin
-            setup_packet[0] = 8'h21;        // bmRequestType: Host-to-Device, Class, Interface
-            setup_packet[1] = REQ_SET_PROTOCOL;
-            setup_packet[2] = protocol;     // wValue low (0=boot, 1=report)
-            setup_packet[3] = 8'h00;        // wValue high
-            setup_packet[4] = interface_num;// wIndex low (interface number)
-            setup_packet[5] = 8'h00;        // wIndex high
-            setup_packet[6] = 8'h00;        // wLength low
-            setup_packet[7] = 8'h00;        // wLength high
+            setup_packet = {8'h00, 8'h00, interface_num, 8'h00, protocol, REQ_SET_PROTOCOL, 8'h21};
         end
     endtask
     
@@ -240,20 +243,25 @@ module usb_enumerator (
             tx_byte_idx <= 4'd0;
             expected_bytes <= 8'd0;
             received_pid <= 4'd0;
-            for (i = 0; i < 8; i = i + 1)
-                setup_packet[i] <= 8'd0;
+            setup_packet <= 64'd0;
+            rx_write_enable <= 1'b0;
+            rx_write_addr <= 8'd0;
+            rx_write_data <= 8'd0;
         end else begin
             // Default outputs
             token_start <= 1'b0;
             utmi_tx_valid <= 1'b0;
             parser_data_valid <= 1'b0;
+            rx_write_enable <= 1'b0;
             
             // Timeout counter
             timeout_counter <= timeout_counter + 1'b1;
             
             // Collect RX data
-            if (utmi_rx_valid && rx_count < 64) begin
-                rx_buffer[rx_count] <= utmi_rx_data;
+            if (utmi_rx_valid && rx_count < 32) begin
+                rx_write_enable <= 1'b1;
+                rx_write_addr <= rx_count[4:0];
+                rx_write_data <= utmi_rx_data;
                 rx_count <= rx_count + 1'b1;
                 
                 // Capture PID from first byte
@@ -343,7 +351,17 @@ module usb_enumerator (
                                 utmi_tx_valid <= 1'b1;
                                 tx_byte_idx <= 4'd1;
                             end else if (tx_byte_idx > 0 && tx_byte_idx <= 8 && utmi_tx_ready) begin
-                                utmi_tx_data <= setup_packet[tx_byte_idx - 1];
+                                // Extract byte from packed register
+                                case (tx_byte_idx)
+                                    4'd1: utmi_tx_data <= setup_byte0;
+                                    4'd2: utmi_tx_data <= setup_byte1;
+                                    4'd3: utmi_tx_data <= setup_byte2;
+                                    4'd4: utmi_tx_data <= setup_byte3;
+                                    4'd5: utmi_tx_data <= setup_byte4;
+                                    4'd6: utmi_tx_data <= setup_byte5;
+                                    4'd7: utmi_tx_data <= setup_byte6;
+                                    4'd8: utmi_tx_data <= setup_byte7;
+                                endcase
                                 utmi_tx_valid <= 1'b1;
                                 tx_byte_idx <= tx_byte_idx + 1'b1;
                             end else if (tx_byte_idx > 8) begin
@@ -381,7 +399,7 @@ module usb_enumerator (
                                 if ((data_pid && received_pid == PID_DATA1) ||
                                     (!data_pid && received_pid == PID_DATA0)) begin
                                     // Extract device descriptor info
-                                    max_packet_size <= rx_buffer[7];  // bMaxPacketSize0 at offset 7
+                                    max_packet_size <= rx_buffer_7;  // bMaxPacketSize0 at offset 7 (registered)
                                     tx_state <= TX_SEND_ACK;
                                 end else begin
                                     state <= STATE_ERROR;
@@ -444,7 +462,17 @@ module usb_enumerator (
                                 utmi_tx_valid <= 1'b1;
                                 tx_byte_idx <= 4'd1;
                             end else if (tx_byte_idx > 0 && tx_byte_idx <= 8 && utmi_tx_ready) begin
-                                utmi_tx_data <= setup_packet[tx_byte_idx - 1];
+                                // Extract byte from packed register
+                                case (tx_byte_idx)
+                                    4'd1: utmi_tx_data <= setup_byte0;
+                                    4'd2: utmi_tx_data <= setup_byte1;
+                                    4'd3: utmi_tx_data <= setup_byte2;
+                                    4'd4: utmi_tx_data <= setup_byte3;
+                                    4'd5: utmi_tx_data <= setup_byte4;
+                                    4'd6: utmi_tx_data <= setup_byte5;
+                                    4'd7: utmi_tx_data <= setup_byte6;
+                                    4'd8: utmi_tx_data <= setup_byte7;
+                                endcase
                                 utmi_tx_valid <= 1'b1;
                                 tx_byte_idx <= tx_byte_idx + 1'b1;
                             end else if (tx_byte_idx > 8) begin
@@ -524,7 +552,17 @@ module usb_enumerator (
                                 utmi_tx_valid <= 1'b1;
                                 tx_byte_idx <= 4'd1;
                             end else if (tx_byte_idx > 0 && tx_byte_idx <= 8 && utmi_tx_ready) begin
-                                utmi_tx_data <= setup_packet[tx_byte_idx - 1];
+                                // Extract byte from packed register
+                                case (tx_byte_idx)
+                                    4'd1: utmi_tx_data <= setup_byte0;
+                                    4'd2: utmi_tx_data <= setup_byte1;
+                                    4'd3: utmi_tx_data <= setup_byte2;
+                                    4'd4: utmi_tx_data <= setup_byte3;
+                                    4'd5: utmi_tx_data <= setup_byte4;
+                                    4'd6: utmi_tx_data <= setup_byte5;
+                                    4'd7: utmi_tx_data <= setup_byte6;
+                                    4'd8: utmi_tx_data <= setup_byte7;
+                                endcase
                                 utmi_tx_valid <= 1'b1;
                                 tx_byte_idx <= tx_byte_idx + 1'b1;
                             end else if (tx_byte_idx > 8) begin
@@ -554,9 +592,9 @@ module usb_enumerator (
                         
                         TX_WAIT_DATA: begin
                             if (!utmi_rx_active && rx_count >= expected_bytes + 3) begin
-                                // Extract VID/PID
-                                vendor_id <= {rx_buffer[9], rx_buffer[8]};
-                                product_id <= {rx_buffer[11], rx_buffer[10]};
+                                // Extract VID/PID (using registered outputs)
+                                vendor_id <= {rx_buffer_9, rx_buffer_8};
+                                product_id <= {rx_buffer_11, rx_buffer_10};
                                 tx_state <= TX_SEND_ACK;
                             end else if (timeout_counter > 32'd120000) begin
                                 state <= STATE_ERROR;
@@ -634,7 +672,17 @@ module usb_enumerator (
                                 utmi_tx_valid <= 1'b1;
                                 tx_byte_idx <= 4'd1;
                             end else if (tx_byte_idx > 0 && tx_byte_idx <= 8 && utmi_tx_ready) begin
-                                utmi_tx_data <= setup_packet[tx_byte_idx - 1];
+                                // Extract byte from packed register
+                                case (tx_byte_idx)
+                                    4'd1: utmi_tx_data <= setup_byte0;
+                                    4'd2: utmi_tx_data <= setup_byte1;
+                                    4'd3: utmi_tx_data <= setup_byte2;
+                                    4'd4: utmi_tx_data <= setup_byte3;
+                                    4'd5: utmi_tx_data <= setup_byte4;
+                                    4'd6: utmi_tx_data <= setup_byte5;
+                                    4'd7: utmi_tx_data <= setup_byte6;
+                                    4'd8: utmi_tx_data <= setup_byte7;
+                                endcase
                                 utmi_tx_valid <= 1'b1;
                                 tx_byte_idx <= tx_byte_idx + 1'b1;
                             end else if (tx_byte_idx > 8) begin

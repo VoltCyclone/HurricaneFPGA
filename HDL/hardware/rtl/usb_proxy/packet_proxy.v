@@ -80,6 +80,8 @@ module packet_proxy (
     localparam PID_NYET   = 4'b0110;
     localparam PID_SOF    = 4'b0101;
     
+    localparam INSPECT_DEPTH = 1024;
+    
     // Buffer flags
     localparam FLAG_DIR_H2D     = 8'h00;  // Host to device
     localparam FLAG_DIR_D2H     = 8'h01;  // Device to host
@@ -101,7 +103,8 @@ module packet_proxy (
     // Internal Registers
     reg [3:0]  state;                      // Current FSM state
     reg [3:0]  next_state;                 // Next state for return after inspect
-    reg [7:0]  packet_buffer [255:0];      // Buffer for packet inspection/modification
+    (* syn_ramstyle = "block_ram" *) reg [7:0]  packet_buffer [255:0];      // Buffer for packet inspection/modification (with block RAM attribute)
+    reg [7:0]  packet_buffer_read;         // Registered read for BRAM inference
     reg [7:0]  packet_length;              // Current packet length
     reg [7:0]  buffer_index;               // Current index in buffer
     reg        packet_direction;           // 0=Host to Device, 1=Device to Host
@@ -113,6 +116,11 @@ module packet_proxy (
     reg        data_phase;                 // In data phase of transfer
     reg [15:0] last_token;                 // Last token packet
     reg [15:0] frame_number;               // SOF frame number
+    
+    // Memory write signals for BRAM inference
+    reg        pkt_buf_write_enable;
+    reg [7:0]  pkt_buf_write_addr;
+    reg [7:0]  pkt_buf_write_data;
     
     // CRC check registers
     reg [15:0] token_crc5;                 // CRC5 for token packets
@@ -128,6 +136,13 @@ module packet_proxy (
     // Determine if packet should be inspected or fast-pathed
     assign use_fast_path = fast_path_enabled && enable_proxy && 
                            !enable_filtering && !enable_modify;
+
+    // CRITICAL: Dual-port BRAM inference pattern
+    always @(posedge clk) begin
+        if (pkt_buf_write_enable)
+            packet_buffer[pkt_buf_write_addr] <= pkt_buf_write_data;
+        packet_buffer_read <= packet_buffer[buffer_index];
+    end
 
     // Packet PID detection
     always @(posedge clk or negedge rst_n) begin
@@ -238,6 +253,9 @@ module packet_proxy (
             buffer_valid <= 1'b0;
             buffer_timestamp <= 64'h0000000000000000;
             buffer_flags <= 8'h00;
+            pkt_buf_write_enable <= 1'b0;
+            pkt_buf_write_addr <= 8'd0;
+            pkt_buf_write_data <= 8'd0;
         end else begin
             // Default assignments
             host_tx_valid <= 1'b0;
@@ -247,6 +265,7 @@ module packet_proxy (
             device_tx_sop <= 1'b0;
             device_tx_eop <= 1'b0;
             buffer_valid <= 1'b0;
+            pkt_buf_write_enable <= 1'b0;
             
             case (state)
                 ST_IDLE: begin
@@ -272,7 +291,9 @@ module packet_proxy (
                         end else begin
                             // Inspection path - capture packet for analysis
                             state <= ST_PACKET_CAPTURE;
-                            packet_buffer[0] <= host_rx_data;
+                            pkt_buf_write_enable <= 1'b1;
+                            pkt_buf_write_addr <= 8'd0;
+                            pkt_buf_write_data <= host_rx_data;
                             buffer_index <= 8'd1;
                             
                             // Identify token packets
@@ -300,7 +321,9 @@ module packet_proxy (
                         end else begin
                             // Inspection path
                             state <= ST_PACKET_CAPTURE;
-                            packet_buffer[0] <= device_rx_data;
+                            pkt_buf_write_enable <= 1'b1;
+                            pkt_buf_write_addr <= 8'd0;
+                            pkt_buf_write_data <= device_rx_data;
                             buffer_index <= 8'd1;
                             
                             // Update data phase flag
@@ -358,7 +381,9 @@ module packet_proxy (
                     if (packet_direction == 1'b0) begin
                         // Host to device capture
                         if (host_rx_valid) begin
-                            packet_buffer[buffer_index] <= host_rx_data;
+                            pkt_buf_write_enable <= 1'b1;
+                            pkt_buf_write_addr <= buffer_index;
+                            pkt_buf_write_data <= host_rx_data;
                             buffer_index <= buffer_index + 8'd1;
                         end
                         
@@ -370,7 +395,9 @@ module packet_proxy (
                     end else begin
                         // Device to host capture
                         if (device_rx_valid) begin
-                            packet_buffer[buffer_index] <= device_rx_data;
+                            pkt_buf_write_enable <= 1'b1;
+                            pkt_buf_write_addr <= buffer_index;
+                            pkt_buf_write_data <= device_rx_data;
                             buffer_index <= buffer_index + 8'd1;
                         end
                         
@@ -472,13 +499,13 @@ module packet_proxy (
                     if (buffer_index < packet_length) begin
                         if (packet_direction == 1'b0) begin
                             // Host to device forwarding
-                            device_tx_data <= packet_buffer[buffer_index];
+                            device_tx_data <= packet_buffer_read;  // Use registered read
                             device_tx_valid <= 1'b1;
                             if (buffer_index == 8'd0) device_tx_sop <= 1'b1;
                             if (buffer_index == packet_length - 1) device_tx_eop <= 1'b1;
                         end else begin
                             // Device to host forwarding
-                            host_tx_data <= packet_buffer[buffer_index];
+                            host_tx_data <= packet_buffer_read;  // Use registered read
                             host_tx_valid <= 1'b1;
                             if (buffer_index == 8'd0) host_tx_sop <= 1'b1;
                             if (buffer_index == packet_length - 1) host_tx_eop <= 1'b1;
@@ -486,7 +513,7 @@ module packet_proxy (
                         
                         // Log packet if enabled
                         if (enable_logging && buffer_ready) begin
-                            buffer_data <= packet_buffer[buffer_index];
+                            buffer_data <= packet_buffer_read;  // Use registered read
                             buffer_valid <= 1'b1;
                         end
                         
@@ -501,7 +528,7 @@ module packet_proxy (
                     // Write packet to buffer manager
                     if (buffer_ready) begin
                         if (buffer_index < packet_length) begin
-                            buffer_data <= packet_buffer[buffer_index];
+                            buffer_data <= packet_buffer_read;  // Use registered read
                             buffer_valid <= 1'b1;
                             buffer_index <= buffer_index + 8'd1;
                         end else begin

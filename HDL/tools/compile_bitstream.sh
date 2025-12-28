@@ -6,18 +6,27 @@ CLEAN=0
 SYNTH_ONLY=0
 DEVICE="45k"
 PACKAGE="CABGA381"
-NUM_THREADS=$(nproc || sysctl -n hw.ncpu || echo 4)
+NUM_THREADS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+# Use all cores for maximum performance
+YOSYS_THREADS=$NUM_THREADS
+PNR_THREADS=$NUM_THREADS
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     -c|--clean) CLEAN=1; shift ;;
     -v|--verbose) VERBOSE=1; shift ;;
     -s|--synth-only) SYNTH_ONLY=1; shift ;;
+    -j|--jobs)
+      NUM_THREADS="$2"
+      YOSYS_THREADS="$2"
+      PNR_THREADS="$2"
+      shift 2 ;;
     -h|--help)
       echo "Usage: $0 [options]"
       echo "  -c, --clean      Clean build directory"
       echo "  -v, --verbose    Verbose build logs"
       echo "  -s, --synth-only Stop after synthesis"
+      echo "  -j, --jobs N     Use N parallel jobs (default: auto-detect)"
       echo "  -h, --help       Show help"
       exit 0 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -61,24 +70,36 @@ echo "[validate] Checking HDL files..."
   exit 1
 }
 
-readarray -t VERILOG_FILES < <(find "$RTL_DIR" -type f -name "*.v")
+# Collect Verilog source files
+VERILOG_FILES=()
+while IFS= read -r file; do
+  VERILOG_FILES+=("$file")
+done < <(find "$RTL_DIR" -type f -name "*.v")
 echo "[synth] Found ${#VERILOG_FILES[@]} Verilog source files."
 
 check_tool yosys || exit 1
 
-YOSYS_SCRIPT="$BUILD_DIR/synth.ys"
-{
-  echo "# Yosys synthesis script"
-  for file in "${VERILOG_FILES[@]}"; do
-    echo "read_verilog -sv $file"
-  done
-  echo "hierarchy -check -top $TOP_MODULE"
-  echo "synth_ecp5 -json $SYNTH_JSON"
-  # use threaded ABC if available
-  echo "set yosys_abc_exec abc -D $NUM_THREADS"
-} > "$YOSYS_SCRIPT"
+# Check if custom synthesis script exists, otherwise generate one
+if [[ -f "$BUILD_DIR/synth.ys" ]] && grep -q "# Yosys synthesis script with" "$BUILD_DIR/synth.ys" 2>/dev/null; then
+  echo "[synth] Using existing optimized synthesis script"
+  YOSYS_SCRIPT="$BUILD_DIR/synth.ys"
+else
+  echo "[synth] Generating synthesis script"
+  YOSYS_SCRIPT="$BUILD_DIR/synth_generated.ys"
+  {
+    echo "# Yosys synthesis script"
+    for file in "${VERILOG_FILES[@]}"; do
+      echo "read_verilog -sv $file"
+    done
+    echo "hierarchy -check -top $TOP_MODULE"
+    echo "synth_ecp5 -json $SYNTH_JSON"
+  } > "$YOSYS_SCRIPT"
+fi
 
-echo "[synth] Running Yosys synthesis..."
+# Enable Yosys multithreading via ABC
+echo "[synth] Running Yosys synthesis with $YOSYS_THREADS threads..."
+export ABC_THREADS=$YOSYS_THREADS
+
 if [[ $VERBOSE -eq 1 ]]; then
   yosys -l "$LOG_DIR/synthesis.log" "$YOSYS_SCRIPT"
 else
@@ -91,7 +112,7 @@ echo "[synth] Done -> $SYNTH_JSON"
 
 check_tool nextpnr-ecp5 || exit 1
 
-echo "[pnr] Launching nextpnr-ecp5 with $NUM_THREADS threads..."
+echo "[pnr] Launching nextpnr-ecp5 with $PNR_THREADS threads..."
 nextpnr_args=(
   --${DEVICE}
   --package ${PACKAGE}
@@ -100,18 +121,29 @@ nextpnr_args=(
   --textcfg "$BUILD_DIR/${TOP_MODULE}_out.config"
   --json "$ROUTED_JSON"
   --log "$LOG_DIR/pnr.log"
-  --threads $NUM_THREADS
+  --threads $PNR_THREADS
+  --parallel-refine
 )
 [[ $VERBOSE -eq 0 ]] && nextpnr_args+=(--quiet)
 
 nextpnr-ecp5 "${nextpnr_args[@]}"
-echo "[pnr] Completed."
-
+echo "[pnr] Completed."/${TOP_MODULE}_out.config"
 check_tool ecppack || exit 1
 
 echo "[bitgen] Creating bitstream..."
-ecppack --input "$BUILD_DIR/${TOP_MODULE}_out.config" \
+ecppack --compress \
+        --input "$BUILD_DIR/${TOP_MODULE}_out.config" \
         --bit "$BITSTREAM_FILE" \
+        --svf "$SVFSTREAM_FILE"
+
+echo ""
+echo "[✓] Build completed with $NUM_THREADS threads"
+echo "[✓] Bitstream ready:"
+echo "    → $BITSTREAM_FILE"
+echo "    → $SVFSTREAM_FILE"
+echo ""
+echo "To flash:"
+echo "    openFPGALoader --board cynthion $BITSTREAM_FILE"
         --svf "$SVFSTREAM_FILE"
 
 echo ""

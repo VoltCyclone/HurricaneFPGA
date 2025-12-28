@@ -1,62 +1,65 @@
 ///////////////////////////////////////////////////////////////////////////////
-// File: usb_protocol_handler.v
+// File: usb_protocol_handler.v (FIXED VERSION)
 // Description: USB Protocol Handler for transparent proxy implementation
 //
-// This module handles USB protocol operations including packet encoding/decoding,
-// CRC verification/generation, and protocol-specific operations.
+// FIXES APPLIED:
+// - CRITICAL: Merged two always blocks that both drove 'state' into ONE
+// - Added proper RX/TX separation with is_transmitting flag
+// - Removed unused tx_data_buffer
+// - Improved state flow
 //
 // Target: Lattice ECP5 on Cynthion device
 ///////////////////////////////////////////////////////////////////////////////
 
 module usb_protocol_handler (
     // Clock and Reset
-    input  wire        clk,             // System clock
-    input  wire        rst_n,           // Active low reset
+    input  wire        clk,
+    input  wire        rst_n,
 
     // UTMI Interface from PHY
-    input  wire [7:0]  utmi_rx_data,    // Received data
-    input  wire        utmi_rx_valid,   // Received data valid
-    input  wire        utmi_rx_active,  // Receiving packet
-    input  wire        utmi_rx_error,   // Receive error
-    input  wire [1:0]  utmi_line_state, // USB line state (SE0, J, K, SE1)
-    output reg  [7:0]  utmi_tx_data,    // Data to transmit
-    output reg         utmi_tx_valid,   // Data valid for transmission
-    input  wire        utmi_tx_ready,   // PHY ready for transmission
-    output reg  [1:0]  utmi_tx_op_mode, // Transmit operation mode
-    output reg  [1:0]  utmi_xcvr_select,// Transceiver speed selection
-    output reg         utmi_termselect, // Termination selection
-    output reg         utmi_dppulldown, // D+ pulldown enable
-    output reg         utmi_dmpulldown, // D- pulldown enable
+    input  wire [7:0]  utmi_rx_data,
+    input  wire        utmi_rx_valid,
+    input  wire        utmi_rx_active,
+    input  wire        utmi_rx_error,
+    input  wire [1:0]  utmi_line_state,
+    output reg  [7:0]  utmi_tx_data,
+    output reg         utmi_tx_valid,
+    input  wire        utmi_tx_ready,
+    output reg  [1:0]  utmi_tx_op_mode,
+    output reg  [1:0]  utmi_xcvr_select,
+    output reg         utmi_termselect,
+    output reg         utmi_dppulldown,
+    output reg         utmi_dmpulldown,
 
     // Protocol Decoded Interface
-    output reg  [7:0]  packet_data,     // Decoded packet data
-    output reg         packet_valid,    // Decoded packet valid
-    output reg         packet_sop,      // Start of packet indicator
-    output reg         packet_eop,      // End of packet indicator
-    output reg  [3:0]  pid,             // Packet ID (TOKEN, DATA, HANDSHAKE, SPECIAL)
-    output reg  [6:0]  dev_addr,        // Device address (from TOKEN)
-    output reg  [3:0]  endp,            // Endpoint number (from TOKEN)
-    output reg         crc_valid,       // CRC validation result
+    output reg  [7:0]  packet_data,
+    output reg         packet_valid,
+    output reg         packet_sop,
+    output reg         packet_eop,
+    output reg  [3:0]  pid,
+    output reg  [6:0]  dev_addr,
+    output reg  [3:0]  endp,
+    output reg         crc_valid,
     
     // Protocol Control Interface
-    input  wire [7:0]  tx_packet_data,  // Transmit packet data
-    input  wire        tx_packet_valid, // Transmit packet valid
-    input  wire        tx_packet_sop,   // Start of transmit packet
-    input  wire        tx_packet_eop,   // End of transmit packet
-    output wire        tx_packet_ready, // Ready to accept transmit data
-    input  wire [3:0]  tx_pid,          // PID for transmission
+    input  wire [7:0]  tx_packet_data,
+    input  wire        tx_packet_valid,
+    input  wire        tx_packet_sop,
+    input  wire        tx_packet_eop,
+    output wire        tx_packet_ready,
+    input  wire [3:0]  tx_pid,
     
     // Configuration and Status
-    input  wire [6:0]  device_address,  // Configured device address
-    input  wire [1:0]  usb_speed,       // USB speed mode (00=LS, 01=FS, 10=HS)
-    output reg         conn_detect,     // Connection detected
-    output reg  [1:0]  conn_speed,      // Connection speed
-    output reg         reset_detect,    // USB reset detected
-    output reg         suspend_detect,  // USB suspend detected
-    output reg         resume_detect    // USB resume detected
+    input  wire [6:0]  device_address,
+    input  wire [1:0]  usb_speed,
+    output reg         conn_detect,
+    output reg  [1:0]  conn_speed,
+    output reg         reset_detect,
+    output reg         suspend_detect,
+    output reg         resume_detect
 );
 
-    // Local parameters
+    // PIDs
     localparam PID_OUT   = 4'b0001;
     localparam PID_IN    = 4'b1001;
     localparam PID_SETUP = 4'b1101;
@@ -73,7 +76,7 @@ module usb_protocol_handler (
     localparam PID_PING  = 4'b0100;
     localparam PID_SPLIT = 4'b1000;
 
-    // FSM states
+    // COMBINED FSM states (RX and TX merged)
     localparam ST_IDLE       = 4'd0;
     localparam ST_RX_PID     = 4'd1;
     localparam ST_RX_TOKEN   = 4'd2;
@@ -86,23 +89,22 @@ module usb_protocol_handler (
     localparam ST_WAIT_EOP   = 4'd9;
     
     // Internal registers
-    reg [3:0]  state;                // FSM state
-    reg [15:0] token_data;           // Token data buffer
-    reg [15:0] crc16;                // CRC16 register
-    reg [4:0]  crc5;                 // CRC5 register
-    reg [2:0]  byte_cnt;             // Byte counter
-    reg [7:0]  tx_data_buffer [15:0];// Transmit data buffer
-    reg [3:0]  tx_byte_cnt;          // Transmit byte counter
-    reg [3:0]  tx_length;            // Transmit length
-    
-    // Loop iterator for all for loops in the module
-    integer i;
+    reg [3:0]  state;
+    reg        is_transmitting;      // ADDED: Track if in TX or RX mode
+    reg [15:0] token_data;
+    reg [15:0] crc16;
+    reg [4:0]  crc5;
+    reg [2:0]  byte_cnt;
+    reg [3:0]  tx_byte_cnt;
+    reg [3:0]  tx_length;
+    reg [3:0]  tx_current_pid;       // ADDED: Store PID for TX state machine
+    integer    i;
     
     // Line state monitoring
-    reg [19:0] se0_counter;          // Counter for SE0 condition (reset detection)
-    reg [23:0] idle_counter;         // Counter for idle condition (suspend detection)
+    reg [19:0] se0_counter;
+    reg [23:0] idle_counter;
     
-    // CRC5 polynomial: x^5 + x^2 + 1
+    // CRC5 polynomial
     function [4:0] crc5_update;
         input [4:0] crc_in;
         input data_bit;
@@ -116,7 +118,7 @@ module usb_protocol_handler (
     end
     endfunction
     
-    // CRC16 polynomial: x^16 + x^15 + x^2 + 1
+    // CRC16 polynomial
     function [15:0] crc16_update;
         input [15:0] crc_in;
         input data_bit;
@@ -130,7 +132,7 @@ module usb_protocol_handler (
     end
     endfunction
 
-    // USB reset, suspend, and resume detection
+    // USB reset, suspend, resume detection (unchanged)
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             se0_counter <= 20'd0;
@@ -139,36 +141,30 @@ module usb_protocol_handler (
             suspend_detect <= 1'b0;
             resume_detect <= 1'b0;
         end else begin
-            // Reset detection (SE0 for >2.5us)
-            if (utmi_line_state == 2'b00) begin  // SE0 state
+            if (utmi_line_state == 2'b00) begin
                 if (se0_counter < 20'hFFFFF) begin
                     se0_counter <= se0_counter + 1'b1;
                 end
-                
-                // At 60MHz clock, 150 cycles = 2.5us
                 if (se0_counter == 20'd150) begin
                     reset_detect <= 1'b1;
                 end
             end else begin
                 se0_counter <= 20'd0;
                 if (se0_counter > 20'd150) begin
-                    reset_detect <= 1'b0;  // End of reset
+                    reset_detect <= 1'b0;
                 end
             end
             
-            // Suspend detection (idle for >3ms)
-            if (utmi_line_state == 2'b01) begin  // J state (idle)
+            if (utmi_line_state == 2'b01) begin
                 if (idle_counter < 24'hFFFFFF) begin
                     idle_counter <= idle_counter + 1'b1;
                 end
-                
-                // At 60MHz clock, 180000 cycles = 3ms
                 if (idle_counter == 24'd180000) begin
                     suspend_detect <= 1'b1;
                 end
             end else begin
                 idle_counter <= 24'd0;
-                if (idle_counter > 24'd180000 && utmi_line_state == 2'b10) begin  // K state after suspend
+                if (idle_counter > 24'd180000 && utmi_line_state == 2'b10) begin
                     resume_detect <= 1'b1;
                     suspend_detect <= 1'b0;
                 end else begin
@@ -178,10 +174,11 @@ module usb_protocol_handler (
         end
     end
 
-    // Packet reception and processing
+    // FIXED: SINGLE state machine for both RX and TX
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= ST_IDLE;
+            is_transmitting <= 1'b0;
             packet_data <= 8'd0;
             packet_valid <= 1'b0;
             packet_sop <= 1'b0;
@@ -194,63 +191,58 @@ module usb_protocol_handler (
             byte_cnt <= 3'd0;
             crc5 <= 5'b11111;
             crc16 <= 16'hFFFF;
+            utmi_tx_data <= 8'd0;
+            utmi_tx_valid <= 1'b0;
+            utmi_tx_op_mode <= 2'b00;
+            tx_byte_cnt <= 4'd0;
+            tx_length <= 4'd0;
+            tx_current_pid <= 4'd0;
         end else begin
-            // Default assignments
+            // Default: clear one-cycle signals
             packet_valid <= 1'b0;
             packet_sop <= 1'b0;
             packet_eop <= 1'b0;
+            utmi_tx_valid <= 1'b0;
             
             case (state)
                 ST_IDLE: begin
-                    if (utmi_rx_active && utmi_rx_valid) begin
-                        // Start of packet, capture PID
+                    byte_cnt <= 3'd0;
+                    tx_byte_cnt <= 4'd0;
+                    
+                    // Priority: Check RX first
+                    if (utmi_rx_active && utmi_rx_valid && !is_transmitting) begin
                         state <= ST_RX_PID;
-                        packet_sop <= 1'b1;
-                        packet_valid <= 1'b1;
-                        packet_data <= utmi_rx_data;
-                        pid <= utmi_rx_data[3:0]; // Lower nibble is the PID
-                        byte_cnt <= 3'd0;
+                        is_transmitting <= 1'b0;
                         crc5 <= 5'b11111;
                         crc16 <= 16'hFFFF;
+                    // Then check TX request
+                    end else if (tx_packet_valid && tx_packet_sop && !utmi_rx_active) begin
+                        state <= ST_TX_PID;
+                        is_transmitting <= 1'b1;
+                        tx_current_pid <= tx_pid;
+                        utmi_tx_valid <= 1'b1;
+                        utmi_tx_data <= {~tx_pid, tx_pid};
                     end
                 end
                 
+                // ===== RX STATES =====
                 ST_RX_PID: begin
-                    // Determine packet type based on PID
-                    if (!utmi_rx_active) begin
-                        // Short packet, only PID
-                        state <= ST_IDLE;
-                        packet_eop <= 1'b1;
-                    end else if (utmi_rx_valid) begin
-                        packet_valid <= 1'b1;
-                        packet_data <= utmi_rx_data;
+                    if (utmi_rx_valid) begin
+                        pid <= utmi_rx_data[3:0];
+                        packet_sop <= 1'b1;
                         
-                        case (pid)
+                        case (utmi_rx_data[3:0])
                             PID_OUT, PID_IN, PID_SETUP, PID_PING, PID_SOF: begin
-                                // TOKEN packet
                                 state <= ST_RX_TOKEN;
-                                token_data[7:0] <= utmi_rx_data;
-                                byte_cnt <= 3'd1;
-                                
-                                // Update CRC5
-                                crc5 <= 5'b11111;
-                                for (i=0; i<8; i=i+1) begin
-                                    crc5 <= crc5_update(crc5, utmi_rx_data[i]);
-                                end
+                                byte_cnt <= 3'd0;
                             end
                             
                             PID_DATA0, PID_DATA1, PID_DATA2, PID_MDATA: begin
-                                // DATA packet
                                 state <= ST_RX_DATA;
-                                
-                                // Update CRC16
-                                for (i=0; i<8; i=i+1) begin
-                                    crc16 <= crc16_update(crc16, utmi_rx_data[i]);
-                                end
+                                crc16 <= 16'hFFFF;
                             end
                             
                             default: begin
-                                // Handshake packet or other - no additional data expected
                                 state <= ST_WAIT_EOP;
                             end
                         endcase
@@ -258,34 +250,25 @@ module usb_protocol_handler (
                 end
                 
                 ST_RX_TOKEN: begin
+                    if (utmi_rx_valid) begin
+                        token_data <= {utmi_rx_data, token_data[15:8]};
+                        byte_cnt <= byte_cnt + 1'b1;
+                        
+                        for (i=0; i<8; i=i+1) begin
+                            crc5 <= crc5_update(crc5, utmi_rx_data[i]);
+                        end
+                        
+                        if (byte_cnt == 3'd1) begin
+                            dev_addr <= token_data[6:0];
+                            endp <= {utmi_rx_data[2:0], token_data[7]};
+                            state <= ST_WAIT_EOP;
+                        end
+                    end
+                    
                     if (!utmi_rx_active) begin
                         state <= ST_IDLE;
                         packet_eop <= 1'b1;
-                        // Process incomplete token
-                    end else if (utmi_rx_valid) begin
-                        packet_valid <= 1'b1;
-                        packet_data <= utmi_rx_data;
-                        
-                        if (byte_cnt == 3'd1) begin
-                            token_data[15:8] <= utmi_rx_data;
-                            byte_cnt <= 3'd2;
-                            
-                            // Continue CRC5 calculation
-                            for (i=0; i<8; i=i+1) begin
-                                crc5 <= crc5_update(crc5, utmi_rx_data[i]);
-                            end
-                            
-                            // Extract device address and endpoint from token
-                            dev_addr <= {utmi_rx_data[6:0]};
-                            endp[0] <= utmi_rx_data[7];
-                        end else begin
-                            // End of TOKEN packet
-                            state <= ST_WAIT_EOP;
-                            
-                            // Extract remaining endpoint bits and check CRC5
-                            endp[3:1] <= utmi_rx_data[2:0];
-                            crc_valid <= (utmi_rx_data[7:3] == ~crc5);
-                        end
+                        crc_valid <= (crc5 == 5'b01100);
                     end
                 end
                 
@@ -293,14 +276,11 @@ module usb_protocol_handler (
                     if (!utmi_rx_active) begin
                         state <= ST_IDLE;
                         packet_eop <= 1'b1;
-                        
-                        // Check final CRC16
-                        crc_valid <= (crc16 == 16'hB001); // CRC residue for valid packet
+                        crc_valid <= (crc16 == 16'hB001);
                     end else if (utmi_rx_valid) begin
                         packet_valid <= 1'b1;
                         packet_data <= utmi_rx_data;
                         
-                        // Update CRC16
                         for (i=0; i<8; i=i+1) begin
                             crc16 <= crc16_update(crc16, utmi_rx_data[i]);
                         end
@@ -314,57 +294,22 @@ module usb_protocol_handler (
                     end
                 end
                 
-                default: state <= ST_IDLE;
-            endcase
-            
-            // Handle RX errors
-            if (utmi_rx_error) begin
-                state <= ST_IDLE;
-                crc_valid <= 1'b0;
-            end
-        end
-    end
-    
-    // Packet transmission state machine
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            utmi_tx_data <= 8'd0;
-            utmi_tx_valid <= 1'b0;
-            utmi_tx_op_mode <= 2'b00;
-            tx_byte_cnt <= 4'd0;
-            tx_length <= 4'd0;
-        end else begin
-            case (state)
-                ST_IDLE: begin
-                    if (tx_packet_valid && tx_packet_sop) begin
-                        // Start transmission with PID
-                        state <= ST_TX_PID;
-                        utmi_tx_valid <= 1'b1;
-                        utmi_tx_data <= {~tx_pid, tx_pid}; // PID with complement as per USB spec
-                        tx_byte_cnt <= 4'd0;
-                    end
-                end
-                
+                // ===== TX STATES =====
                 ST_TX_PID: begin
                     if (utmi_tx_ready) begin
-                        // Determine next state based on PID type
-                        case (tx_pid)
+                        case (tx_current_pid)
                             PID_OUT, PID_IN, PID_SETUP, PID_PING, PID_SOF: begin
-                                // TOKEN packets have two additional bytes
                                 state <= ST_TX_DATA;
                                 tx_length <= 4'd2;
                             end
                             
                             PID_DATA0, PID_DATA1, PID_DATA2, PID_MDATA: begin
-                                // DATA packets have variable length + 2 byte CRC16
                                 state <= ST_TX_DATA;
-                                // Length will be determined by tx_packet_eop
                             end
                             
                             default: begin
-                                // Handshake packets are PID only
+                                // Handshake - PID only
                                 state <= ST_TX_EOP;
-                                utmi_tx_valid <= 1'b0;
                             end
                         endcase
                     end
@@ -375,12 +320,15 @@ module usb_protocol_handler (
                         if (tx_packet_valid) begin
                             utmi_tx_data <= tx_packet_data;
                             utmi_tx_valid <= 1'b1;
-                            tx_data_buffer[tx_byte_cnt] <= tx_packet_data;
                             tx_byte_cnt <= tx_byte_cnt + 1'b1;
+                            
+                            // Update CRC on-the-fly
+                            for (i=0; i<8; i=i+1) begin
+                                crc16 <= crc16_update(crc16, tx_packet_data[i]);
+                            end
                             
                             if (tx_packet_eop) begin
                                 state <= ST_TX_CRC;
-                                utmi_tx_valid <= 1'b0; // Will send CRC next
                             end
                         end else begin
                             utmi_tx_valid <= 1'b0;
@@ -390,26 +338,29 @@ module usb_protocol_handler (
                 
                 ST_TX_CRC: begin
                     if (utmi_tx_ready) begin
-                        case (tx_pid)
+                        case (tx_current_pid)
                             PID_OUT, PID_IN, PID_SETUP, PID_PING, PID_SOF: begin
                                 // Send CRC5 for token packets
-                                // CRC5 calculation would be done here based on tx_data_buffer
                                 utmi_tx_valid <= 1'b1;
-                                utmi_tx_data <= {3'b000, ~crc5}; // Inverted CRC5
+                                utmi_tx_data <= {3'b000, ~crc5};
                                 state <= ST_TX_EOP;
                             end
                             
                             PID_DATA0, PID_DATA1, PID_DATA2, PID_MDATA: begin
-                                // Send first byte of CRC16
-                                // CRC16 calculation would be done here based on tx_data_buffer
-                                utmi_tx_valid <= 1'b1;
-                                utmi_tx_data <= ~crc16[7:0]; // First byte of inverted CRC16
-                                state <= ST_TX_EOP;
+                                // Send CRC16 LSB first
+                                if (tx_byte_cnt == 4'd0) begin
+                                    utmi_tx_valid <= 1'b1;
+                                    utmi_tx_data <= ~crc16[7:0];
+                                    tx_byte_cnt <= 4'd1;
+                                end else begin
+                                    utmi_tx_valid <= 1'b1;
+                                    utmi_tx_data <= ~crc16[15:8];
+                                    state <= ST_TX_EOP;
+                                end
                             end
                             
                             default: begin
                                 state <= ST_TX_EOP;
-                                utmi_tx_valid <= 1'b0;
                             end
                         endcase
                     end
@@ -419,33 +370,39 @@ module usb_protocol_handler (
                     if (utmi_tx_ready) begin
                         utmi_tx_valid <= 1'b0;
                         state <= ST_IDLE;
+                        is_transmitting <= 1'b0;
                     end
                 end
                 
-                default: state <= ST_IDLE;
+                default: begin
+                    state <= ST_IDLE;
+                    is_transmitting <= 1'b0;
+                end
             endcase
+            
+            // Handle RX errors
+            if (utmi_rx_error) begin
+                state <= ST_IDLE;
+                crc_valid <= 1'b0;
+                is_transmitting <= 1'b0;
+            end
         end
     end
     
-    // Connection detection logic
+    // Connection detection
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             conn_detect <= 1'b0;
             conn_speed <= 2'b00;
         end else begin
-            // Simple detection based on line state
             if (utmi_line_state != 2'b00) begin
                 conn_detect <= 1'b1;
-                
-                // Speed detection (simplified)
                 if (reset_detect && se0_counter > 20'd300) begin
-                    // After reset, check for high-speed detection
-                    conn_speed <= 2'b10; // High-speed
+                    conn_speed <= 2'b10;
                 end else begin
-                    conn_speed <= 2'b01; // Default to full-speed
+                    conn_speed <= 2'b01;
                 end
             end else if (se0_counter > 20'd10000) begin
-                // Long SE0 indicates no device
                 conn_detect <= 1'b0;
             end
         end
@@ -454,26 +411,25 @@ module usb_protocol_handler (
     // Configuration outputs
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            utmi_xcvr_select <= 2'b01; // Default to full-speed
-            utmi_termselect <= 1'b1;   // Full-speed termination
+            utmi_xcvr_select <= 2'b01;
+            utmi_termselect <= 1'b1;
             utmi_dppulldown <= 1'b0;
             utmi_dmpulldown <= 1'b0;
         end else begin
-            // Configure based on speed mode
             utmi_xcvr_select <= usb_speed;
             
             case (usb_speed)
-                2'b00: begin  // Low-speed
+                2'b00: begin
                     utmi_termselect <= 1'b1;
                     utmi_dppulldown <= 1'b0;
-                    utmi_dmpulldown <= 1'b1; // Pull-down on D-
+                    utmi_dmpulldown <= 1'b1;
                 end
-                2'b01: begin  // Full-speed
+                2'b01: begin
                     utmi_termselect <= 1'b1;
                     utmi_dppulldown <= 1'b0;
                     utmi_dmpulldown <= 1'b0;
                 end
-                2'b10: begin  // High-speed
+                2'b10: begin
                     utmi_termselect <= 1'b0;
                     utmi_dppulldown <= 1'b0;
                     utmi_dmpulldown <= 1'b0;
@@ -487,7 +443,8 @@ module usb_protocol_handler (
         end
     end
     
-    // Ready signal for transmit data
-    assign tx_packet_ready = (state == ST_IDLE) || (state == ST_TX_DATA && utmi_tx_ready);
+    // Ready signal
+    assign tx_packet_ready = (state == ST_IDLE && !utmi_rx_active) || 
+                             (state == ST_TX_DATA && utmi_tx_ready);
 
 endmodule

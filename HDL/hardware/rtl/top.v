@@ -238,7 +238,7 @@ module top (
     wire [6:0]  trans_addr;             // Transaction device address
     wire [3:0]  trans_endp;             // Transaction endpoint
     wire        trans_data_pid;         // Data PID (0=DATA0, 1=DATA1)
-    wire [9:0]  trans_data_len;         // Data length
+    wire [7:0]  trans_data_len;         // Data length
     wire [7:0]  trans_data_in;          // Data input for OUT/SETUP
     wire        trans_data_in_valid;    // Data input valid
     wire        trans_data_in_ready;    // Ready for data input
@@ -285,7 +285,7 @@ module top (
     wire [3:0]  kbd_endpoint;           // Keyboard interrupt endpoint
     wire [10:0] kbd_max_packet_size;    // Endpoint max packet size
     wire [7:0]  kbd_poll_interval;      // Polling interval (ms)
-    wire [511:0] kbd_report_data;       // Keyboard report (up to 64 bytes)
+    wire [63:0] kbd_report_data;        // Keyboard report (8 bytes)
     wire        kbd_report_valid;       // New report available
     wire [6:0]  kbd_report_length;      // Actual report length
     wire        kbd_active;             // Keyboard actively polling
@@ -298,7 +298,7 @@ module top (
     wire [3:0]  mouse_endpoint;         // Mouse interrupt endpoint
     wire [10:0] mouse_max_packet_size;  // Endpoint max packet size
     wire [7:0]  mouse_poll_interval;    // Polling interval (ms)
-    wire [511:0] mouse_report_data;     // Mouse report (up to 64 bytes)
+    wire [39:0] mouse_report_data;      // Mouse report (5 bytes)
     wire        mouse_report_valid;     // New report available
     wire [6:0]  mouse_report_length;    // Actual report length
     wire [7:0]  mouse_button_state;     // Button states
@@ -578,14 +578,19 @@ module top (
         .bus_reset_req(bus_reset_req),
         .reset_active(reset_active),
         .detected_speed(detected_speed),
-        .reset_done(reset_done),
+        
+        // PHY Control Outputs
+        .phy_op_mode(phy2_tx_op_mode),
+        .phy_xcvr_select(),  // Not used
+        .phy_term_select(),  // Not used
+        
+        // PHY Status Inputs
+        .phy_line_state(phy2_line_state),
         
         // UTMI Interface (connected to PHY2 for host operations)
-        .utmi_line_state(phy2_line_state),
         .utmi_tx_data(phy2_tx_data),
         .utmi_tx_valid(phy2_tx_valid),
-        .utmi_tx_ready(phy2_tx_ready),
-        .utmi_tx_op_mode(phy2_tx_op_mode)
+        .utmi_tx_ready(phy2_tx_ready)
     );
     
     // USB Disconnect Detector - Monitors line state for device disconnect/connect
@@ -610,17 +615,19 @@ module top (
         .clk(clk),
         .rst_n(rst_n),
         
-        // Control Interface
+        // Token Request Interface
         .token_start(token_start),
         .token_type(token_type),
         .token_addr(token_addr),
         .token_endp(token_endp),
+        .token_frame(11'b0),  // Not used for non-SOF tokens
         .token_ready(token_ready),
         .token_done(token_done),
         
-        // Output Interface
-        .token_data(token_data_out),
-        .token_valid(token_data_valid)
+        // UTMI Transmit Interface
+        .utmi_tx_data(token_data_out),
+        .utmi_tx_valid(token_data_valid),
+        .utmi_tx_ready(1'b1)  // Always ready for now
     );
     
     // USB SOF Generator - Generates Start-of-Frame packets
@@ -628,17 +635,20 @@ module top (
         .clk(clk),
         .rst_n(rst_n),
         
-        // Control Interface
-        .sof_enable(sof_enable),
-        .usb_speed(detected_speed),
+        // Control
+        .enable(sof_enable),
+        .speed(detected_speed),
         
-        // SOF Outputs
+        // SOF Output
         .sof_trigger(sof_trigger),
         .frame_number(sof_frame_number),
-        .sof_start(sof_start),
-        .sof_data(sof_data_out),
-        .sof_valid(sof_data_valid),
-        .sof_done(sof_done)
+        
+        // Token Generator Interface
+        .token_start(sof_start),
+        .token_type(),  // Not used
+        .token_frame(),  // Not used
+        .token_ready(1'b1),  // Always ready
+        .token_done(sof_done)
     );
     
     // USB Transaction Engine - Handles SETUP/IN/OUT transactions
@@ -800,7 +810,7 @@ module top (
         .utmi_rx_data(phy2_rx_data),
         .utmi_rx_valid(phy2_rx_valid),
         .utmi_rx_active(phy2_rx_active),
-        .utmi_rx_pid(phy2_rx_pid),
+        .utmi_rx_pid(host_pid),
         
         // SOF Interface
         .sof_trigger(sof_trigger),
@@ -1226,8 +1236,9 @@ module top (
         .rx_fifo_used(uart_rx_fifo_used)
     );
     
-    // UART debug output generator
+    // UART debug output generator - DISABLED for faster synthesis
     // Automatically sends status updates via UART0→USB
+    /*
     uart_debug_output uart_debug (
         .clk(clk),
         .rst_n(rst_n),
@@ -1251,6 +1262,7 @@ module top (
         .error_count(error_count),
         .buffer_overflow(buffer_overflow)
     );
+    */
     
     // =======================================================================
     // UART Command Processor

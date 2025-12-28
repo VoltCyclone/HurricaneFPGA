@@ -1,9 +1,11 @@
 ///////////////////////////////////////////////////////////////////////////////
-// File: usb_descriptor_parser.v
+// File: usb_descriptor_parser.v (FIXED VERSION)
 // Description: USB Descriptor Parser for Endpoint Extraction
 //
-// Parses USB configuration descriptors to extract interface and endpoint
-// information. Filters based on interface class, subclass, and protocol.
+// FIXES APPLIED:
+// - CRITICAL: Fixed duplicate case labels by using if-else based on desc_type
+// - Removed duplicate assignment on line 110-111
+// - Improved clarity of descriptor field extraction
 //
 // Supports:
 // - Device descriptors (0x01)
@@ -14,34 +16,34 @@
 
 module usb_descriptor_parser (
     // Clock and Reset
-    input  wire        clk,                 // System clock
-    input  wire        rst_n,               // Active low reset
+    input  wire        clk,
+    input  wire        rst_n,
     
     // Control Interface
-    input  wire        enable,              // Enable parsing
-    output reg         done,                // Parsing complete
-    output reg         valid,               // Valid endpoints found
+    input  wire        enable,
+    output reg         done,
+    output reg         valid,
     
     // Descriptor Stream Input
-    input  wire [7:0]  desc_data,           // Descriptor byte stream
-    input  wire        desc_valid,          // Data valid
-    output reg         desc_ready,          // Ready for data
+    input  wire [7:0]  desc_data,
+    input  wire        desc_valid,
+    output reg         desc_ready,
     
     // Filter Configuration
-    input  wire [7:0]  filter_class,        // Interface class to match
-    input  wire [7:0]  filter_subclass,     // Interface subclass (0xFF=any)
-    input  wire [7:0]  filter_protocol,     // Interface protocol (0xFF=any)
-    input  wire [1:0]  filter_transfer_type, // Endpoint transfer type
-    input  wire        filter_direction,    // 0=OUT, 1=IN
+    input  wire [7:0]  filter_class,
+    input  wire [7:0]  filter_subclass,
+    input  wire [7:0]  filter_protocol,
+    input  wire [1:0]  filter_transfer_type,
+    input  wire        filter_direction,
     
     // Extracted Endpoint Information
-    output reg  [3:0]  endp_number,         // Endpoint number
-    output reg         endp_direction,      // 0=OUT, 1=IN
-    output reg  [1:0]  endp_type,           // Transfer type
-    output reg  [10:0] endp_max_packet,     // Max packet size
-    output reg  [7:0]  endp_interval,       // Polling interval
-    output reg  [7:0]  iface_protocol_out,  // Interface protocol for this endpoint
-    output reg  [7:0]  iface_number_out     // Interface number for this endpoint
+    output reg  [3:0]  endp_number,
+    output reg         endp_direction,
+    output reg  [1:0]  endp_type,
+    output reg  [10:0] endp_max_packet,
+    output reg  [7:0]  endp_interval,
+    output reg  [7:0]  iface_protocol_out,
+    output reg  [7:0]  iface_number_out
 );
 
     // Descriptor Types
@@ -64,23 +66,23 @@ module usb_descriptor_parser (
     localparam STATE_DONE          = 3'd3;
     
     reg [2:0]  state;
-    reg [7:0]  desc_length;         // bLength field
-    reg [7:0]  desc_offset;         // Current offset in descriptor
-    reg [7:0]  desc_type;           // Current descriptor type
+    reg [7:0]  desc_length;
+    reg [7:0]  desc_offset;
+    reg [7:0]  desc_type;
     
     // Interface descriptor fields
     reg [7:0]  iface_class;
     reg [7:0]  iface_subclass;
     reg [7:0]  iface_protocol;
-    reg [7:0]  iface_number;        // Interface number (bInterfaceNumber)
-    reg        in_matching_iface;   // Currently in a matching interface
+    reg [7:0]  iface_number;
+    reg        in_matching_iface;
     
     // Endpoint descriptor temporary storage
-    reg [7:0]  temp_endp_addr;      // bEndpointAddress
-    reg [7:0]  temp_endp_attr;      // bmAttributes
-    reg [10:0] temp_max_packet_low; // wMaxPacketSize (storing across cycles)
+    reg [7:0]  temp_endp_addr;
+    reg [7:0]  temp_endp_attr;
+    reg [10:0] temp_max_packet;
     
-    // Endpoint found flags
+    // Endpoint found flag
     reg        found_endpoint;
     
     // State Machine
@@ -100,15 +102,14 @@ module usb_descriptor_parser (
             in_matching_iface <= 1'b0;
             temp_endp_addr <= 8'd0;
             temp_endp_attr <= 8'd0;
-            temp_max_packet_low <= 11'd0;
+            temp_max_packet <= 11'd0;
             found_endpoint <= 1'b0;
             endp_number <= 4'd0;
             endp_direction <= 1'b0;
             endp_max_packet <= 11'd0;
             endp_interval <= 8'd0;
-            iface_protocol_out <= 8'd0;
+            iface_protocol_out <= 8'd0;  // FIXED: Single assignment
             iface_number_out <= 8'd0;
-            iface_protocol_out <= 8'd0;
         end else begin
             case (state)
                 STATE_IDLE: begin
@@ -134,71 +135,72 @@ module usb_descriptor_parser (
                 
                 STATE_IN_DESCRIPTOR: begin
                     if (desc_valid) begin
-                        // Process based on offset within current descriptor
+                        // FIXED: No more duplicate case labels
+                        // Use if-else to distinguish between descriptor types
                         case (desc_offset)
                             8'd0: begin
-                                // Byte 1: descriptor type
+                                // Byte 1 is always descriptor type
                                 desc_type <= desc_data;
                             end
-                            // Interface Descriptor fields
+                            
                             8'd1: begin
+                                // Different meaning for different descriptor types
                                 if (desc_type == DESC_INTERFACE) begin
-                                    iface_number <= desc_data;  // bInterfaceNumber
-                                end
-                            end
-                            
-                            8'd4: begin
-                                if (desc_type == DESC_INTERFACE) begin
-                                    iface_class <= desc_data;
-                                end
-                            end end
-                            end
-                            
-                            8'd5: begin
-                                if (desc_type == DESC_INTERFACE) begin
-                                    iface_subclass <= desc_data;
-                                end
-                            end
-                            
-                            8'd6: begin
-                                if (desc_type == DESC_INTERFACE) begin
-                                    iface_protocol <= desc_data;
-                                end
-                            end
-                            
-                            // Endpoint Descriptor fields
-                            8'd1: begin
-                                if (desc_type == DESC_ENDPOINT) begin
+                                    // bInterfaceNumber
+                                    iface_number <= desc_data;
+                                end else if (desc_type == DESC_ENDPOINT) begin
+                                    // bEndpointAddress
                                     temp_endp_addr <= desc_data;
                                 end
+                                // Other descriptor types: ignore or handle as needed
                             end
                             
                             8'd2: begin
                                 if (desc_type == DESC_ENDPOINT) begin
+                                    // bmAttributes
                                     temp_endp_attr <= desc_data;
                                 end
+                                // Interface descriptor byte 2: bAlternateSetting (not needed)
                             end
                             
                             8'd3: begin
                                 if (desc_type == DESC_ENDPOINT) begin
                                     // wMaxPacketSize low byte
-                                    temp_max_packet_low[7:0] <= desc_data;
+                                    temp_max_packet[7:0] <= desc_data;
                                 end
+                                // Interface descriptor byte 3: bNumEndpoints (not needed)
                             end
                             
                             8'd4: begin
-                                if (desc_type == DESC_ENDPOINT) begin
-                                    // wMaxPacketSize high byte (only lower 3 bits)
-                                    temp_max_packet_low[10:8] <= desc_data[2:0];
+                                if (desc_type == DESC_INTERFACE) begin
+                                    // bInterfaceClass
+                                    iface_class <= desc_data;
+                                end else if (desc_type == DESC_ENDPOINT) begin
+                                    // wMaxPacketSize high byte (only lower 3 bits used)
+                                    temp_max_packet[10:8] <= desc_data[2:0];
                                 end
                             end
                             
                             8'd5: begin
-                                if (desc_type == DESC_ENDPOINT) begin
+                                if (desc_type == DESC_INTERFACE) begin
+                                    // bInterfaceSubClass
+                                    iface_subclass <= desc_data;
+                                end else if (desc_type == DESC_ENDPOINT) begin
                                     // bInterval
                                     endp_interval <= desc_data;
                                 end
                             end
+                            
+                            8'd6: begin
+                                if (desc_type == DESC_INTERFACE) begin
+                                    // bInterfaceProtocol
+                                    iface_protocol <= desc_data;
+                                end
+                                // Endpoint descriptors don't have byte 6
+                            end
+                            
+                            // Note: Interface descriptor has byte 7 (iInterface string index)
+                            // but we don't need it for endpoint extraction
                         endcase
                         
                         desc_offset <= desc_offset + 1'b1;
@@ -216,33 +218,33 @@ module usb_descriptor_parser (
                                 end else begin
                                     in_matching_iface <= 1'b0;
                                 end
-                            end
+                                state <= STATE_GET_LENGTH;
+                                
+                            end else if (desc_type == DESC_ENDPOINT && in_matching_iface) begin
                                 // Check if endpoint matches filter
-                                if (ep_type == filter_transfer_type && ep_dir == filter_direction) begin
-                                    endp_number <= ep_num;
-                                    endp_direction <= ep_dir;
-                                    endp_type <= ep_type;
-                                    endp_max_packet <= temp_max_packet_low;
-                                    iface_protocol_out <= iface_protocol;  // Output the protocol
-                                    iface_number_out <= iface_number;      // Output interface number
-                                    found_endpoint <= 1'b1;
-                                    valid <= 1'b1;
-                                    state <= STATE_DONE;m;
-                                    endp_direction <= ep_dir;
-                                    endp_type <= ep_type;
-                                    endp_max_packet <= temp_max_packet_low;
-                                    iface_protocol_out <= iface_protocol;  // Output the protocol
+                                if (temp_endp_attr[1:0] == filter_transfer_type && 
+                                    temp_endp_addr[7] == filter_direction) begin
+                                    // Found matching endpoint - extract info
+                                    endp_number <= temp_endp_addr[3:0];
+                                    endp_direction <= temp_endp_addr[7];
+                                    endp_type <= temp_endp_attr[1:0];
+                                    endp_max_packet <= temp_max_packet;
+                                    iface_protocol_out <= iface_protocol;
+                                    iface_number_out <= iface_number;
                                     found_endpoint <= 1'b1;
                                     valid <= 1'b1;
                                     state <= STATE_DONE;
                                 end else begin
+                                    // Endpoint doesn't match filter - continue parsing
                                     state <= STATE_GET_LENGTH;
                                 end
-                            end else if (desc_type == DESC_CONFIGURATION && desc_offset == 8'd0) begin
-                                // Configuration descriptor is first, continue parsing
+                                
+                            end else if (desc_type == DESC_CONFIGURATION) begin
+                                // Configuration descriptor is first - continue
                                 state <= STATE_GET_LENGTH;
+                                
                             end else begin
-                                // Continue to next descriptor
+                                // Unknown/unhandled descriptor type - skip
                                 state <= STATE_GET_LENGTH;
                             end
                         end
@@ -252,7 +254,7 @@ module usb_descriptor_parser (
                 STATE_DONE: begin
                     done <= 1'b1;
                     desc_ready <= 1'b0;
-                    // Stay in this state until reset
+                    // Stay in this state until reset or disable
                 end
                 
                 default: begin

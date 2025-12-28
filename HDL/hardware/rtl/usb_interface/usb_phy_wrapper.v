@@ -1,6 +1,14 @@
 ///////////////////////////////////////////////////////////////////////////////
-// File: usb_phy_wrapper.v
+// File: usb_phy_wrapper.v (FIXED VERSION)
 // Description: USB PHY interface wrapper for ECP5 FPGA
+//
+// FIXES APPLIED:
+// - CRITICAL: Added proper CDC synchronizer chain for line_state crossing
+//   from clk domain to clk_480mhz domain (2-flop synchronizer)
+// - CRITICAL: Removed combinatorial clock (clk_recovered) - now using it as
+//   clock enable with edge detection instead
+// - Fixed metastability risk in bit_phase_detector
+// - Fixed EOP detection to use synchronized line state
 //
 // This module provides a wrapper for the USB physical interfaces, handling the
 // low-level signaling for USB 2.0 data transmission and reception.
@@ -50,15 +58,25 @@ module usb_phy_wrapper (
 );
 
     // Internal signals
-    reg  [1:0]  line_state_q;           // Registered line state
+    reg  [1:0]  line_state_q;           // Registered line state (clk domain)
     reg  [1:0]  line_state_sync;        // Synchronized line state
+    
+    // ADDED: CDC synchronizer chain for clk_480mhz domain
+    reg  [1:0]  line_state_480_sync1;   // First stage synchronizer
+    reg  [1:0]  line_state_480_sync2;   // Second stage synchronizer
+    
     reg  [7:0]  shift_reg;              // NRZI bit shift register
     reg         bit_phase_detector;     // Phase detection for clock recovery
     reg         bit_stuff_counter;      // Bit stuffing counter
     reg         rx_active_r;            // Registered rx_active
     reg         tx_busy;                // Transmitter busy flag
+    
+    // ADDED: Clock enable edge detection
+    reg         clk_recovered_prev;
+    wire        clk_recovered_edge;
+    
     wire        nrzi_data;              // NRZI encoded outgoing data
-    wire        clk_recovered;          // Recovered receive clock
+    wire        clk_recovered;          // Clock recovery signal (used as enable, not clock)
     wire        sync_detect;            // SYNC pattern detection
     wire        eop_detect;             // End of packet detection
 
@@ -84,37 +102,56 @@ module usb_phy_wrapper (
 
     // Clock recovery and NRZI decoding
     // -------------------------------
+    // FIXED: Added proper CDC and removed combinatorial clock
     // For accurate implementation, we need complex CDR (Clock Data Recovery)
     // The simplified version below would be expanded in a real implementation
 
-    // Detect transitions for clock recovery
+    // FIXED: CDC synchronizer chain from clk to clk_480mhz domain
+    always @(posedge clk_480mhz or negedge rst_n) begin
+        if (!rst_n) begin
+            line_state_480_sync1 <= 2'b00;
+            line_state_480_sync2 <= 2'b00;
+        end else begin
+            line_state_480_sync1 <= line_state_q;         // First flop
+            line_state_480_sync2 <= line_state_480_sync1; // Second flop - safe to use
+        end
+    end
+
+    // Detect transitions for clock recovery using SYNCHRONIZED line state
     always @(posedge clk_480mhz or negedge rst_n) begin
         if (!rst_n) begin
             bit_phase_detector <= 1'b0;
             rx_active_r <= 1'b0;
         end else begin
-            bit_phase_detector <= line_state_q[0] ^ line_state_q[1]; // Simplified - detects any change
+            bit_phase_detector <= line_state_480_sync2[0] ^ line_state_480_sync2[1]; // Use synchronized version
             rx_active_r <= sync_detect | (rx_active_r & ~eop_detect);
         end
     end
 
-    // Simplified CDR implementation (would be more complex in real design)
+    // Simplified CDR implementation (used as enable, not clock)
     assign clk_recovered = bit_phase_detector & rx_active_r;
-    assign phy_rx_clock = clk_recovered;
+    assign clk_recovered_edge = clk_recovered & ~clk_recovered_prev;
+    assign phy_rx_clock = clk_recovered; // For monitoring
     
     // SYNC pattern detection (simplified)
     assign sync_detect = (shift_reg == 8'b10000000); // SYNC = K J K J K J K K
     
-    // EOP detection (simplified)
-    assign eop_detect = (line_state_q == 2'b00) & rx_active_r; // SE0 condition
+    // EOP detection (simplified) - use synchronized line state
+    assign eop_detect = (line_state_480_sync2 == 2'b00) & rx_active_r; // SE0 condition
     
-    // Receive data shifting
-    always @(posedge clk_recovered or negedge rst_n) begin
+    // FIXED: Use proper clock with enable instead of combinatorial clock
+    always @(posedge clk_480mhz or negedge rst_n) begin
         if (!rst_n) begin
             shift_reg <= 8'h00;
-        end else if (rx_active_r) begin
-            // NRZI decoding and bit stuffing removal would be implemented here
-            shift_reg <= {shift_reg[6:0], line_state_q[0]};
+            clk_recovered_prev <= 1'b0;
+        end else begin
+            clk_recovered_prev <= clk_recovered;
+            
+            // Only shift on rising edge of recovered clock
+            if (clk_recovered_edge && rx_active_r) begin
+                // NRZI decoding and bit stuffing removal would be implemented here
+                shift_reg <= {shift_reg[6:0], line_state_480_sync2[0]};
+            end
         end
     end
 

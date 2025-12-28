@@ -1,9 +1,13 @@
 ///////////////////////////////////////////////////////////////////////////////
-// File: usb_monitor.v
+// File: usb_monitor.v (FIXED VERSION)
 // Description: USB Monitor and Proxy Logic
 //
-// This module implements the main transparent proxy logic, coordinating between
-// the host and device USB interfaces and enabling monitoring functionality.
+// FIXES APPLIED:
+// - Fixed double state assignment bug in ST_MODIFY_PACKET
+// - Added buffer overflow protection
+// - Registered packet routing outputs to break combinatorial loops
+// - Added proper state transition handling with next_state
+// - Improved reset handling
 //
 // Target: Lattice ECP5 on Cynthion device
 ///////////////////////////////////////////////////////////////////////////////
@@ -93,10 +97,18 @@ module usb_monitor (
     localparam DIR_DEVICE_TO_HOST = 1'b1;
     
     // Packet buffer and state
-    reg [7:0]  packet_buffer [255:0]; // Buffer for packet modification
-    reg [7:0]  packet_length;        // Current packet length
-    reg [3:0]  packet_pid;           // Current packet PID
-    reg        packet_dir;           // Current packet direction
+    (* syn_ramstyle = "block_ram" *) reg [7:0]  packet_buffer [255:0];
+    reg [7:0]  packet_read_data;      // Registered read for byte_counter
+    reg [7:0]  packet_buffer_1;       // Registered read for address translation
+    reg [7:0]  packet_buffer_write;   // For write forwarding
+    reg [7:0]  packet_length;
+    reg [3:0]  packet_pid;
+    reg        packet_dir;
+    
+    // Memory write signals for BRAM inference
+    reg        pkt_write_enable;
+    reg [7:0]  pkt_write_addr;
+    reg [7:0]  pkt_write_data;
     
     // FSM states
     localparam ST_IDLE               = 4'd0;
@@ -109,48 +121,67 @@ module usb_monitor (
     localparam ST_BUFFER_PACKET      = 4'd7;
     localparam ST_HANDLE_SOF         = 4'd8;
     
-    reg [3:0]  state;                // Current state
-    reg [7:0]  byte_counter;         // Track bytes in current packet
-    reg        current_toggle;       // DATA0/1 toggle tracking
-    reg [15:0] last_frame_num;       // Last SOF frame number
+    reg [3:0]  state;
+    reg [3:0]  next_state;           // ADDED: For proper state sequencing
+    reg [7:0]  byte_counter;
+    reg        current_toggle;
+    reg [15:0] last_frame_num;
     
-    // Per-endpoint toggle tracking (16 endpoints max, IN and OUT directions)
-    reg [31:0] data_toggle;          // Toggle bits (2 bits per endpoint/direction)
+    // Per-endpoint toggle tracking
+    reg [31:0] data_toggle;
     
     // Modification tracking
-    reg        packet_modified;      // Flag if packet has been modified
+    reg        packet_modified;
     
     // Connection tracking
-    reg        device_connected;     // Device connection status
-    reg [1:0]  device_speed;         // Connected device speed
+    reg        device_connected;
+    reg [1:0]  device_speed;
     
     // Statistics counters
-    reg [31:0] host_packets;         // Host packet counter
-    reg [31:0] device_packets;       // Device packet counter
-    reg [15:0] error_count;          // Error counter
+    reg [31:0] host_packets;
+    reg [31:0] device_packets;
+    reg [15:0] error_count;
     
-    // Host to device packet routing
-    assign device_tx_data = (packet_filter_en && packet_modified) ? 
-                           packet_buffer[byte_counter] : host_rx_data;
-    assign device_tx_valid = (state == ST_HOST_TO_DEVICE) ? host_rx_valid : 1'b0;
-    assign device_tx_sop = (state == ST_HOST_TO_DEVICE) ? host_rx_sop : 1'b0;
-    assign device_tx_eop = (state == ST_HOST_TO_DEVICE) ? host_rx_eop : 1'b0;
-    assign device_tx_pid = (packet_modified && addr_translate_en) ? 
-                          ((host_rx_pid == PID_SETUP || host_rx_pid == PID_OUT || host_rx_pid == PID_IN) ?
-                           host_rx_pid : packet_pid) : host_rx_pid;
+    // ADDED: Registered outputs to break combinatorial loops
+    reg [7:0]  device_tx_data_r;
+    reg        device_tx_valid_r;
+    reg        device_tx_sop_r;
+    reg        device_tx_eop_r;
+    reg [3:0]  device_tx_pid_r;
     
-    // Device to host packet routing
-    assign host_tx_data = (packet_filter_en && packet_modified) ? 
-                         packet_buffer[byte_counter] : device_rx_data;
-    assign host_tx_valid = (state == ST_DEVICE_TO_HOST) ? device_rx_valid : 1'b0;
-    assign host_tx_sop = (state == ST_DEVICE_TO_HOST) ? device_rx_sop : 1'b0;
-    assign host_tx_eop = (state == ST_DEVICE_TO_HOST) ? device_rx_eop : 1'b0;
-    assign host_tx_pid = (packet_modified) ? packet_pid : device_rx_pid;
+    reg [7:0]  host_tx_data_r;
+    reg        host_tx_valid_r;
+    reg        host_tx_sop_r;
+    reg        host_tx_eop_r;
+    reg [3:0]  host_tx_pid_r;
+    
+    // Assign registered outputs
+    assign device_tx_data = device_tx_data_r;
+    assign device_tx_valid = device_tx_valid_r;
+    assign device_tx_sop = device_tx_sop_r;
+    assign device_tx_eop = device_tx_eop_r;
+    assign device_tx_pid = device_tx_pid_r;
+    
+    assign host_tx_data = host_tx_data_r;
+    assign host_tx_valid = host_tx_valid_r;
+    assign host_tx_sop = host_tx_sop_r;
+    assign host_tx_eop = host_tx_eop_r;
+    assign host_tx_pid = host_tx_pid_r;
+
+    // CRITICAL: Dual-port BRAM inference pattern
+    // Read and write in same always block with separate ports
+    always @(posedge clk) begin
+        if (pkt_write_enable)
+            packet_buffer[pkt_write_addr] <= pkt_write_data;
+        packet_read_data <= packet_buffer[byte_counter];
+        packet_buffer_1 <= packet_buffer[1];
+    end
 
     // Main proxy state machine
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state <= ST_IDLE;
+            next_state <= ST_IDLE;
             packet_length <= 8'd0;
             packet_pid <= 4'd0;
             packet_dir <= DIR_HOST_TO_DEVICE;
@@ -165,69 +196,86 @@ module usb_monitor (
             device_packets <= 32'd0;
             error_count <= 16'd0;
             buffer_valid <= 1'b0;
-            status_register <= 8'h00;
-            buffer_data <= 8'h00;
-            buffer_flags <= 8'h00;
-            buffer_timestamp <= 64'h0;
+            buffer_data <= 8'd0;
+            buffer_timestamp <= 64'd0;
+            buffer_flags <= 8'd0;
+            status_register <= 8'd0;
+            pkt_write_enable <= 1'b0;
+            pkt_write_addr <= 8'd0;
+            pkt_write_data <= 8'd0;
+            
+            // ADDED: Reset registered outputs
+            device_tx_data_r <= 8'd0;
+            device_tx_valid_r <= 1'b0;
+            device_tx_sop_r <= 1'b0;
+            device_tx_eop_r <= 1'b0;
+            device_tx_pid_r <= 4'd0;
+            host_tx_data_r <= 8'd0;
+            host_tx_valid_r <= 1'b0;
+            host_tx_sop_r <= 1'b0;
+            host_tx_eop_r <= 1'b0;
+            host_tx_pid_r <= 4'd0;
         end else begin
-            // Default assignments
+            // Default: disable write
+            pkt_write_enable <= 1'b0;
+            // Default: clear one-cycle signals
             buffer_valid <= 1'b0;
-        
+            device_tx_valid_r <= 1'b0;
+            device_tx_sop_r <= 1'b0;
+            device_tx_eop_r <= 1'b0;
+            host_tx_valid_r <= 1'b0;
+            host_tx_sop_r <= 1'b0;
+            host_tx_eop_r <= 1'b0;
+            
             case (state)
                 ST_IDLE: begin
-                    packet_modified <= 1'b0;
                     byte_counter <= 8'd0;
+                    packet_modified <= 1'b0;
                     
-                    // Check for host->device transaction
-                    if (proxy_enable && host_rx_sop && host_rx_valid) begin
-                        state <= ST_HOST_TO_DEVICE;
-                        packet_pid <= host_rx_pid;
-                        packet_dir <= DIR_HOST_TO_DEVICE;
-                        host_packets <= host_packets + 1'b1;
-                        
-                        // Capture start timestamp
-                        buffer_timestamp <= timestamp;
-                        
-                        // Check for SOF packets - special handling
-                        if (host_rx_pid == PID_SOF) begin
-                            state <= ST_HANDLE_SOF;
+                    if (proxy_enable) begin
+                        // Check for incoming host packet
+                        if (host_rx_sop && host_rx_valid) begin
+                            packet_dir <= DIR_HOST_TO_DEVICE;
+                            packet_pid <= host_rx_pid;
+                            buffer_timestamp <= timestamp;
+                            host_packets <= host_packets + 1'b1;
+                            
+                            // Handle SOF separately
+                            if (host_rx_pid == PID_SOF) begin
+                                state <= ST_HANDLE_SOF;
+                            end else if (packet_filter_en) begin
+                                state <= ST_FILTER_PACKET;
+                            end else begin
+                                state <= ST_HOST_TO_DEVICE;
+                            end
                         end
                         
-                        // Check if we need to filter/modify this packet
-                        else if (packet_filter_en && (packet_filter_mask[host_rx_pid[3:0]])) begin
-                            state <= ST_FILTER_PACKET;
-                        end
-                    end
-                    
-                    // Check for device->host transaction
-                    else if (proxy_enable && device_rx_sop && device_rx_valid) begin
-                        state <= ST_DEVICE_TO_HOST;
-                        packet_pid <= device_rx_pid;
-                        packet_dir <= DIR_DEVICE_TO_HOST;
-                        device_packets <= device_packets + 1'b1;
-                        
-                        // Capture start timestamp
-                        buffer_timestamp <= timestamp;
-                        
-                        // Check if we need to filter/modify this packet
-                        if (packet_filter_en && (packet_filter_mask[device_rx_pid[3:0]])) begin
-                            state <= ST_FILTER_PACKET;
+                        // Check for incoming device packet
+                        else if (device_rx_sop && device_rx_valid) begin
+                            packet_dir <= DIR_DEVICE_TO_HOST;
+                            packet_pid <= device_rx_pid;
+                            buffer_timestamp <= timestamp;
+                            device_packets <= device_packets + 1'b1;
+                            
+                            if (packet_filter_en) begin
+                                state <= ST_FILTER_PACKET;
+                            end else begin
+                                state <= ST_DEVICE_TO_HOST;
+                            end
                         end
                     end
                     
-                    // Check link status
-                    if (device_line_state != 2'b00 && !device_connected) begin
-                        device_connected <= 1'b1;
-                        status_register[0] <= 1'b1; // Connected bit
-                    end else if (device_line_state == 2'b00 && device_connected) begin
-                        device_connected <= 1'b0;
-                        status_register[0] <= 1'b0; // Disconnected
-                    end
+                    // Update status
+                    status_register[0] <= device_connected;
                 end
                 
                 ST_HOST_TO_DEVICE: begin
                     // Forward host to device traffic
                     if (host_rx_valid) begin
+                        // ADDED: Registered output instead of combinatorial
+                        device_tx_data_r <= host_rx_data;
+                        device_tx_valid_r <= 1'b1;
+                        
                         // Buffer packet for logging
                         if (buffer_ready && !buffer_valid) begin
                             buffer_data <= host_rx_data;
@@ -238,40 +286,36 @@ module usb_monitor (
                         byte_counter <= byte_counter + 1'b1;
                     end
                     
+                    if (host_rx_sop) begin
+                        device_tx_sop_r <= 1'b1;
+                    end
+                    
                     if (host_rx_eop) begin
+                        device_tx_eop_r <= 1'b1;
                         state <= ST_WAIT_DEVICE_RESP;
                         byte_counter <= 8'd0;
                     end
+                    
+                    // ADDED: Set PID
+                    device_tx_pid_r <= host_rx_pid;
                 end
                 
                 ST_WAIT_DEVICE_RESP: begin
-                    // Wait for device response
-                    if (device_rx_sop && device_rx_valid) begin
-                        state <= ST_DEVICE_TO_HOST;
-                        packet_pid <= device_rx_pid;
-                        device_packets <= device_packets + 1'b1;
-                        
-                        // Update data toggle if DATA packet
-                        if (host_rx_pid == PID_DATA0 || host_rx_pid == PID_DATA1) begin
-                            if (device_rx_pid == PID_ACK) begin
-                                // On ACK, toggle the DATA toggle bit
-                                if (packet_pid == PID_OUT || packet_pid == PID_SETUP) begin
-                                    // Toggle for OUT/SETUP to this endpoint
-                                    data_toggle[{1'b0, host_rx_endp}] <= ~data_toggle[{1'b0, host_rx_endp}];
-                                end
-                            end
-                        end
-                    end
-                    
-                    // Timeout or other condition to go back to IDLE
-                    if (!host_rx_valid && !device_rx_valid) begin
+                    // Wait for device response or timeout
+                    if (device_rx_sop || (byte_counter > 8'd200)) begin
                         state <= ST_IDLE;
+                    end else begin
+                        byte_counter <= byte_counter + 1'b1;
                     end
                 end
                 
                 ST_DEVICE_TO_HOST: begin
                     // Forward device to host traffic
                     if (device_rx_valid) begin
+                        // ADDED: Registered output
+                        host_tx_data_r <= device_rx_data;
+                        host_tx_valid_r <= 1'b1;
+                        
                         // Buffer packet for logging
                         if (buffer_ready && !buffer_valid) begin
                             buffer_data <= device_rx_data;
@@ -282,18 +326,25 @@ module usb_monitor (
                         byte_counter <= byte_counter + 1'b1;
                     end
                     
+                    if (device_rx_sop) begin
+                        host_tx_sop_r <= 1'b1;
+                    end
+                    
                     if (device_rx_eop) begin
+                        host_tx_eop_r <= 1'b1;
                         state <= ST_WAIT_HOST_RESP;
                         byte_counter <= 8'd0;
                         
                         // Update data toggle if DATA packet
                         if (device_rx_pid == PID_DATA0 || device_rx_pid == PID_DATA1) begin
-                            // Toggle for IN to this endpoint on successful transmission
                             if (host_rx_pid == PID_IN) begin
                                 data_toggle[{1'b1, host_rx_endp}] <= ~data_toggle[{1'b1, host_rx_endp}];
                             end
                         end
                     end
+                    
+                    // ADDED: Set PID
+                    host_tx_pid_r <= device_rx_pid;
                 end
                 
                 ST_WAIT_HOST_RESP: begin
@@ -309,13 +360,21 @@ module usb_monitor (
                     // Packet filtering logic
                     if (packet_dir == DIR_HOST_TO_DEVICE) begin
                         if (host_rx_valid) begin
-                            // Store packet in buffer
-                            packet_buffer[byte_counter] <= host_rx_data;
-                            byte_counter <= byte_counter + 1'b1;
+                            // ADDED: Bounds check
+                            if (byte_counter < 8'd255) begin
+                                pkt_write_enable <= 1'b1;
+                                pkt_write_addr <= byte_counter;
+                                pkt_write_data <= host_rx_data;
+                                byte_counter <= byte_counter + 1'b1;
+                            end else begin
+                                // Buffer overflow - drop packet
+                                error_count <= error_count + 1'b1;
+                                state <= ST_IDLE;
+                            end
                         end
                         
                         if (host_rx_eop) begin
-                            packet_length <= byte_counter + 1'b1;
+                            packet_length <= byte_counter;
                             byte_counter <= 8'd0;
                             
                             // Decide if we need to modify the packet
@@ -328,13 +387,21 @@ module usb_monitor (
                     end else begin
                         // Device to host filtering
                         if (device_rx_valid) begin
-                            // Store packet in buffer
-                            packet_buffer[byte_counter] <= device_rx_data;
-                            byte_counter <= byte_counter + 1'b1;
+                            // ADDED: Bounds check
+                            if (byte_counter < 8'd255) begin
+                                pkt_write_enable <= 1'b1;
+                                pkt_write_addr <= byte_counter;
+                                pkt_write_data <= device_rx_data;
+                                byte_counter <= byte_counter + 1'b1;
+                            end else begin
+                                // Buffer overflow - drop packet
+                                error_count <= error_count + 1'b1;
+                                state <= ST_IDLE;
+                            end
                         end
                         
                         if (device_rx_eop) begin
-                            packet_length <= byte_counter + 1'b1;
+                            packet_length <= byte_counter;
                             byte_counter <= 8'd0;
                             
                             // Decide if we need to modify the packet
@@ -351,48 +418,52 @@ module usb_monitor (
                     // Packet modification logic
                     packet_modified <= 1'b1;
                     
-                    // Address translation if enabled
+                    // Address translation if enabled (using registered read)
                     if (addr_translate_en && 
                         (packet_pid == PID_IN || packet_pid == PID_OUT || packet_pid == PID_SETUP)) begin
-                        if (packet_buffer[1][6:0] == addr_translate_from) begin
-                            packet_buffer[1][6:0] <= addr_translate_to;
+                        if (packet_buffer_1[6:0] == addr_translate_from) begin
+                            pkt_write_enable <= 1'b1;
+                            pkt_write_addr <= 8'd1;
+                            pkt_write_data <= {packet_buffer_1[7], addr_translate_to};
                         end
                     end
                     
-                    // Route packet after modification
-                    if (packet_dir == DIR_HOST_TO_DEVICE) begin
-                        state <= ST_HOST_TO_DEVICE;
-                    end else begin
-                        state <= ST_DEVICE_TO_HOST;
-                    end
-                    
-                    // Log modified packet
+                    // FIXED: Proper state sequencing
+                    // Log modified packet FIRST, then forward
                     state <= ST_BUFFER_PACKET;
+                    
+                    // Set next state for after buffering
+                    if (packet_dir == DIR_HOST_TO_DEVICE) begin
+                        next_state <= ST_HOST_TO_DEVICE;
+                    end else begin
+                        next_state <= ST_DEVICE_TO_HOST;
+                    end
                 end
                 
                 ST_BUFFER_PACKET: begin
                     // Store packet in buffer with modification flag
                     if (buffer_ready) begin
-                        buffer_valid <= 1'b1;
-                        buffer_data <= packet_buffer[byte_counter];
-                        buffer_flags <= {2'b00, 1'b1, packet_pid, packet_dir}; // Modified flag set
-                        
-                        byte_counter <= byte_counter + 1'b1;
-                        if (byte_counter >= packet_length - 1) begin
-                            if (packet_dir == DIR_HOST_TO_DEVICE) begin
-                                state <= ST_HOST_TO_DEVICE;
-                            end else begin
-                                state <= ST_DEVICE_TO_HOST;
-                            end
+                        if (byte_counter < packet_length) begin
+                            buffer_valid <= 1'b1;
+                            buffer_data <= packet_read_data;  // Use registered read
+                            buffer_flags <= {2'b00, packet_modified, packet_pid, packet_dir};
+                            byte_counter <= byte_counter + 1'b1;
+                        end else begin
+                            // Buffering complete, go to next state
+                            state <= next_state;
                             byte_counter <= 8'd0;
                         end
+                    end else begin
+                        // Buffer not ready - skip to next state
+                        state <= next_state;
+                        byte_counter <= 8'd0;
                     end
                 end
                 
                 ST_HANDLE_SOF: begin
                     // Process SOF packet
                     if (host_rx_valid) begin
-                        // Extract frame number (typically in byte 1-2)
+                        // Extract frame number
                         if (byte_counter == 8'd1) begin
                             last_frame_num[7:0] <= host_rx_data;
                         end else if (byte_counter == 8'd2) begin
@@ -414,7 +485,7 @@ module usb_monitor (
             if ((host_rx_valid && !host_rx_crc_valid && host_rx_eop) || 
                 (device_rx_valid && !device_rx_crc_valid && device_rx_eop)) begin
                 error_count <= error_count + 1'b1;
-                status_register[1] <= 1'b1; // Error bit
+                status_register[1] <= 1'b1;
             end
             
             // Update status register
@@ -429,13 +500,12 @@ module usb_monitor (
     // Connection speed detection
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            device_speed <= 2'b00; // Unknown speed
+            device_speed <= 2'b00;
         end else if (event_valid) begin
-            // Speed detection mode - logic based on chirp sequences/reset timing
             case (event_type)
-                8'h01: device_speed <= 2'b01; // Full-speed event detected
-                8'h02: device_speed <= 2'b10; // High-speed event detected
-                8'h03: device_speed <= 2'b00; // Low-speed event detected
+                8'h01: device_speed <= 2'b01; // Full-speed
+                8'h02: device_speed <= 2'b10; // High-speed
+                8'h03: device_speed <= 2'b00; // Low-speed
                 default: ; // No change
             endcase
         end

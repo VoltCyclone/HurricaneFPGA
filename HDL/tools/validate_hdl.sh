@@ -74,7 +74,7 @@ validate_file() {
     fi
 
     iverilog -t null -I"$INCLUDE_DIR" \
-        -y"$RTL_DIR" -y"$RTL_DIR/usb_interface" -y"$RTL_DIR/usb_proxy" \
+        -y"$RTL_DIR" -y"$RTL_DIR/usb_interface" -y"$RTL_DIR/usb_proxy" -y"$RTL_DIR/usb_engines" \
         "$file" 2> /tmp/iverilog_errors.txt
 
     if [[ $? -eq 0 ]]; then

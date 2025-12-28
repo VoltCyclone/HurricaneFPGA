@@ -304,7 +304,8 @@ module simple_fifo #(
 
     localparam ADDR_WIDTH = $clog2(DEPTH);
     
-    reg [DATA_WIDTH-1:0] mem [DEPTH-1:0];
+    (* syn_ramstyle = "block_ram" *) reg [DATA_WIDTH-1:0] mem [DEPTH-1:0];
+    reg [DATA_WIDTH-1:0] mem_read_data;  // For BRAM inference
     reg [ADDR_WIDTH:0] wr_ptr;
     reg [ADDR_WIDTH:0] rd_ptr;
     
@@ -313,6 +314,11 @@ module simple_fifo #(
     assign empty = (count == 0);
     assign full = (count == DEPTH);
     assign used = (count > 255) ? 8'd255 : count[7:0];
+    
+    // Synchronous read for BRAM inference
+    always @(posedge clk) begin
+        mem_read_data <= mem[rd_ptr[ADDR_WIDTH-1:0]];
+    end
     
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -328,7 +334,7 @@ module simple_fifo #(
             rd_ptr <= 0;
             rd_data <= 0;
         end else if (rd_en && !empty) begin
-            rd_data <= mem[rd_ptr[ADDR_WIDTH-1:0]];
+            rd_data <= mem_read_data;  // Use registered read
             rd_ptr <= rd_ptr + 1'b1;
         end
     end

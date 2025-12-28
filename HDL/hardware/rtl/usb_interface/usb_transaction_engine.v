@@ -1,6 +1,12 @@
 ///////////////////////////////////////////////////////////////////////////////
-// File: usb_transaction_engine.v
+// File: usb_transaction_engine.v (FIXED VERSION)
 // Description: USB Transaction Engine with SETUP/IN/OUT Support
+//
+// FIXES APPLIED:
+// - HIGH: Fixed timeout counter - now resets on every state transition
+// - MEDIUM: Fixed handshake detection logic to wait for packet completion
+//   before checking received_pid
+// - Timeout counter was incrementing continuously causing premature timeouts
 //
 // Implements complete USB transactions including:
 // - SETUP transactions (token + DATA0 + handshake)
@@ -182,13 +188,14 @@ module usb_transaction_engine (
                     data_in_ready <= 1'b0;
                     data_byte_count <= 8'd0;
                     crc16 <= 16'hFFFF;
-                    timeout_counter <= 32'd0;
+                    timeout_counter <= 32'd0; // Reset in IDLE
                     
                     if (trans_start) begin
                         trans_ready <= 1'b0;
                         saved_trans_type <= trans_type;
                         saved_data_pid <= trans_data_pid;
                         saved_data_len <= trans_data_len;
+                        timeout_counter <= 32'd0; // FIXED: Reset on transition
                         state <= STATE_SEND_TOKEN;
                     end
                 end
@@ -198,6 +205,7 @@ module usb_transaction_engine (
                         token_start <= 1'b1;
                         token_addr <= trans_addr;
                         token_endp <= trans_endp;
+                        timeout_counter <= 32'd0; // FIXED: Reset on transition
                         
                         case (saved_trans_type)
                             TRANS_SETUP: token_type <= TOKEN_SETUP;
@@ -262,19 +270,24 @@ module usb_transaction_engine (
                 end
                 
                 STATE_WAIT_HS_OUT: begin
-                    // Wait for handshake (ACK/NAK/STALL)
-                    if (utmi_rx_valid && !utmi_rx_active) begin
+                    // FIXED: Wait for handshake packet to complete
+                    // PID is captured in the common code above (rx_data_started)
+                    if (!utmi_rx_active && rx_data_started) begin
+                        // Packet complete, check the captured PID
                         case (received_pid)
                             PID_ACK: begin
                                 trans_result <= RESULT_ACK;
+                                timeout_counter <= 32'd0; // FIXED: Reset on transition
                                 state <= STATE_COMPLETE;
                             end
                             PID_NAK: begin
                                 trans_result <= RESULT_NAK;
+                                timeout_counter <= 32'd0; // FIXED: Reset on transition
                                 state <= STATE_COMPLETE;
                             end
                             PID_STALL: begin
                                 trans_result <= RESULT_STALL;
+                                timeout_counter <= 32'd0; // FIXED: Reset on transition
                                 state <= STATE_COMPLETE;
                             end
                             default: begin
@@ -294,12 +307,15 @@ module usb_transaction_engine (
                         // Check PID matches expected
                         if ((saved_data_pid && received_pid == PID_DATA1) ||
                             (!saved_data_pid && received_pid == PID_DATA0)) begin
+                            timeout_counter <= 32'd0; // FIXED: Reset on transition
                             state <= STATE_SEND_HS_IN;
                         end else if (received_pid == PID_NAK) begin
                             trans_result <= RESULT_NAK;
+                            timeout_counter <= 32'd0; // FIXED: Reset on transition
                             state <= STATE_COMPLETE;
                         end else if (received_pid == PID_STALL) begin
                             trans_result <= RESULT_STALL;
+                            timeout_counter <= 32'd0; // FIXED: Reset on transition
                             state <= STATE_COMPLETE;
                         end else begin
                             trans_result <= RESULT_CRC_ERROR;
@@ -317,6 +333,7 @@ module usb_transaction_engine (
                         utmi_tx_data <= {~PID_ACK, PID_ACK};
                         utmi_tx_valid <= 1'b1;
                         trans_result <= RESULT_ACK;
+                        timeout_counter <= 32'd0; // FIXED: Reset on transition
                         state <= STATE_COMPLETE;
                     end
                 end

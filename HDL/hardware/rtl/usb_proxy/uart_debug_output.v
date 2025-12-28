@@ -46,11 +46,17 @@ module uart_debug_output (
     input  wire        buffer_overflow      // Buffer overflow flag
 );
 
-    // Message buffer
-    reg [7:0] msg_buffer [255:0];
+    // Message buffer (with block RAM attribute for better synthesis)
+    (* syn_ramstyle = "block_ram" *) reg [7:0] msg_buffer [255:0];
+    reg [7:0] msg_buffer_out;  // Registered read for block RAM
     reg [7:0] msg_length;
     reg [7:0] msg_index;
     reg       msg_sending;
+    
+    // Memory write signals for BRAM inference
+    reg        msg_write_enable;
+    reg [7:0]  msg_write_addr;
+    reg [7:0]  msg_write_data;
     
     // Timers
     reg [31:0] status_timer;        // 1 Hz status update timer
@@ -80,6 +86,14 @@ module uart_debug_output (
         end
     endfunction
     
+    // CRITICAL: Dual-port BRAM inference pattern
+    // Read and write in same always block with separate ports
+    always @(posedge clk) begin
+        if (msg_write_enable)
+            msg_buffer[msg_write_addr] <= msg_write_data;
+        msg_buffer_out <= msg_buffer[msg_index];
+    end
+
     // Message builders
     task build_status_message;
         integer i;
@@ -331,7 +345,7 @@ module uart_debug_output (
                 SENDING: begin
                     if (msg_index < msg_length) begin
                         if (uart_tx_ready && !uart_tx_valid) begin
-                            uart_tx_data <= msg_buffer[msg_index];
+                            uart_tx_data <= msg_buffer_out;  // Use registered read
                             uart_tx_valid <= 1'b1;
                             msg_index <= msg_index + 1;
                         end else if (uart_tx_valid) begin
