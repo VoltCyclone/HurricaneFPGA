@@ -5,10 +5,19 @@ authors = ["HurricaneFPGA Contributors"]
 edition = "2021"
 license = "BSD-3-Clause"
 
+[lib]
+name = "samd51_hid_injector"
+path = "src/lib.rs"
+test = true
+
+[[bin]]
+name = "samd51_hid_injector"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
-panic-halt = "0.2"
 embedded-hal = "0.2"
 
 # SAMD51 Hardware Abstraction Layer
@@ -20,6 +29,9 @@ usbd-serial = "0.1"
 
 # No-std collections
 heapless = "0.8"
+
+[target.'cfg(not(test))'.dependencies]
+panic-halt = "0.2"
 
 [profile.release]
 opt-level = "z"      # Optimize for size

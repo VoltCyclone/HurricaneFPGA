@@ -991,3 +991,344 @@ fn hex_digit(nibble: u8) -> u8 {
         _ => b'?',
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_command_to_uart_frame_basic() {
+        let cmd = Command {
+            code: 0x11,
+            payload: [0x01, 0x02, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            length: 3,
+        };
+        
+        let frame = cmd.to_uart_frame();
+        
+        // Check that frame starts with [CMD:
+        assert_eq!(&frame[0..5], b"[CMD:");
+        
+        // Check command code is 11 (0x11)
+        assert_eq!(frame[5], b'1');
+        assert_eq!(frame[6], b'1');
+    }
+
+    #[test]
+    fn test_parse_int_positive() {
+        assert_eq!(parse_int(b"42"), Some(42));
+        assert_eq!(parse_int(b"0"), Some(0));
+        assert_eq!(parse_int(b"1234"), Some(1234));
+    }
+
+    #[test]
+    fn test_parse_int_negative() {
+        assert_eq!(parse_int(b"-42"), Some(-42));
+        assert_eq!(parse_int(b"-1"), Some(-1));
+        assert_eq!(parse_int(b"-999"), Some(-999));
+    }
+
+    #[test]
+    fn test_parse_int_with_whitespace() {
+        assert_eq!(parse_int(b"  42"), Some(42));
+        assert_eq!(parse_int(b"   -42"), Some(-42));
+    }
+
+    #[test]
+    fn test_format_i16_positive() {
+        let mut buf = [0u8; 10];
+        let len = format_i16(123, &mut buf);
+        assert_eq!(&buf[..len], b"123");
+        
+        let len = format_i16(0, &mut buf);
+        assert_eq!(&buf[..len], b"0");
+    }
+
+    #[test]
+    fn test_format_i16_negative() {
+        let mut buf = [0u8; 10];
+        let len = format_i16(-123, &mut buf);
+        assert_eq!(&buf[..len], b"-123");
+        
+        let len = format_i16(-1, &mut buf);
+        assert_eq!(&buf[..len], b"-1");
+    }
+
+    #[test]
+    fn test_command_processor_new() {
+        let processor = CommandProcessor::new();
+        assert_eq!(processor.index, 0);
+        assert_eq!(processor.response_len, 0);
+    }
+
+    #[test]
+    fn test_parse_mouse_move() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        let cmd = processor.parse(b"nozen.move(10,20)\n", &mut cache);
+        
+        match cmd {
+            CommandType::FpgaCommand(c) => {
+                assert_eq!(c.code, 0x11); // INJECT_MOUSE
+                assert_eq!(c.length, 5);
+                assert_eq!(c.payload[0], 0x00); // no buttons
+                assert_eq!(c.payload[1], 10); // x
+                assert_eq!(c.payload[2], 20); // y
+            }
+            _ => panic!("Expected FpgaCommand"),
+        }
+        
+        // Check that mouse state was updated
+        assert_eq!(processor.mouse_state.position(), (10, 20));
+    }
+
+    #[test]
+    fn test_parse_mouse_move_negative() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        let cmd = processor.parse(b"nozen.move(-5,-10)\n", &mut cache);
+        
+        match cmd {
+            CommandType::FpgaCommand(c) => {
+                assert_eq!(c.code, 0x11);
+                assert_eq!(c.payload[1] as i8, -5);
+                assert_eq!(c.payload[2] as i8, -10);
+            }
+            _ => panic!("Expected FpgaCommand"),
+        }
+        
+        assert_eq!(processor.mouse_state.position(), (-5, -10));
+    }
+
+    #[test]
+    fn test_parse_mouse_moveto() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        // Set initial position
+        processor.mouse_state.set_position(10, 20);
+        
+        // Move to absolute position
+        let cmd = processor.parse(b"nozen.moveto(50,100)\n", &mut cache);
+        
+        match cmd {
+            CommandType::FpgaCommand(c) => {
+                assert_eq!(c.code, 0x11);
+                // Should send delta: (50-10, 100-20) = (40, 80)
+                assert_eq!(c.payload[1], 40);
+                assert_eq!(c.payload[2], 80);
+            }
+            _ => panic!("Expected FpgaCommand"),
+        }
+        
+        // State should be updated to new position
+        assert_eq!(processor.mouse_state.position(), (50, 100));
+    }
+
+    #[test]
+    fn test_parse_left_click_press() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        let cmd = processor.parse(b"nozen.left(1)\n", &mut cache);
+        
+        match cmd {
+            CommandType::FpgaCommand(c) => {
+                assert_eq!(c.code, 0x11);
+                assert_eq!(c.payload[0], 0x01); // left button mask
+                assert_eq!(c.payload[1], 0); // no movement
+                assert_eq!(c.payload[2], 0);
+            }
+            _ => panic!("Expected FpgaCommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_left_click_release() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        let cmd = processor.parse(b"nozen.left(0)\n", &mut cache);
+        
+        match cmd {
+            CommandType::FpgaCommand(c) => {
+                assert_eq!(c.payload[0], 0x00); // no buttons
+            }
+            _ => panic!("Expected FpgaCommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_right_click() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        let cmd = processor.parse(b"nozen.right(1)\n", &mut cache);
+        
+        match cmd {
+            CommandType::FpgaCommand(c) => {
+                assert_eq!(c.payload[0], 0x02); // right button mask
+            }
+            _ => panic!("Expected FpgaCommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_middle_click() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        let cmd = processor.parse(b"nozen.middle(1)\n", &mut cache);
+        
+        match cmd {
+            CommandType::FpgaCommand(c) => {
+                assert_eq!(c.payload[0], 0x04); // middle button mask
+            }
+            _ => panic!("Expected FpgaCommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_wheel() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        let cmd = processor.parse(b"nozen.wheel(5)\n", &mut cache);
+        
+        match cmd {
+            CommandType::FpgaCommand(c) => {
+                assert_eq!(c.code, 0x11);
+                assert_eq!(c.payload[0], 0); // no buttons
+                assert_eq!(c.payload[1], 0); // no x movement
+                assert_eq!(c.payload[2], 0); // no y movement
+                assert_eq!(c.payload[3], 5); // wheel
+            }
+            _ => panic!("Expected FpgaCommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_wheel_negative() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        let cmd = processor.parse(b"nozen.wheel(-3)\n", &mut cache);
+        
+        match cmd {
+            CommandType::FpgaCommand(c) => {
+                assert_eq!(c.payload[3] as i8, -3);
+            }
+            _ => panic!("Expected FpgaCommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_getpos() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        processor.mouse_state.set_position(100, 200);
+        
+        let cmd = processor.parse(b"nozen.getpos\n", &mut cache);
+        
+        match cmd {
+            CommandType::Response => {
+                assert!(processor.response_len > 0);
+                let response = &processor.response_buffer[..processor.response_len];
+                // Should contain "km.pos(100,200)\n"
+                assert!(response.starts_with(b"km.pos("));
+            }
+            _ => panic!("Expected Response"),
+        }
+    }
+
+    #[test]
+    fn test_parse_restart() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        let cmd = processor.parse(b"nozen.restart\n", &mut cache);
+        
+        match cmd {
+            CommandType::Restart => {}
+            _ => panic!("Expected Restart"),
+        }
+    }
+
+    #[test]
+    fn test_parse_unknown_command() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        let cmd = processor.parse(b"nozen.invalid()\n", &mut cache);
+        
+        match cmd {
+            CommandType::NoOp => {}
+            _ => panic!("Expected NoOp"),
+        }
+    }
+
+    #[test]
+    fn test_parse_multiline() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        // First line
+        let cmd1 = processor.parse(b"nozen.move(10,20)\n", &mut cache);
+        assert!(matches!(cmd1, CommandType::FpgaCommand(_)));
+        
+        // Second line
+        let cmd2 = processor.parse(b"nozen.left(1)\n", &mut cache);
+        assert!(matches!(cmd2, CommandType::FpgaCommand(_)));
+    }
+
+    #[test]
+    fn test_parse_partial_then_complete() {
+        let mut processor = CommandProcessor::new();
+        let mut cache = DescriptorCache::new();
+        
+        // Send partial command
+        let cmd1 = processor.parse(b"nozen.move(", &mut cache);
+        assert!(matches!(cmd1, CommandType::NoOp));
+        
+        // Complete the command
+        let cmd2 = processor.parse(b"10,20)\n", &mut cache);
+        assert!(matches!(cmd2, CommandType::FpgaCommand(_)));
+    }
+
+    #[test]
+    fn test_hex_digit() {
+        assert_eq!(hex_digit(0), b'0');
+        assert_eq!(hex_digit(9), b'9');
+        assert_eq!(hex_digit(10), b'A');
+        assert_eq!(hex_digit(15), b'F');
+    }
+
+    #[test]
+    fn test_hex_to_nibble() {
+        assert_eq!(hex_to_nibble(b'0'), Some(0));
+        assert_eq!(hex_to_nibble(b'9'), Some(9));
+        assert_eq!(hex_to_nibble(b'A'), Some(10));
+        assert_eq!(hex_to_nibble(b'F'), Some(15));
+        assert_eq!(hex_to_nibble(b'a'), Some(10));
+        assert_eq!(hex_to_nibble(b'f'), Some(15));
+        assert_eq!(hex_to_nibble(b'G'), None);
+    }
+
+    #[test]
+    fn test_parse_u8_from_slice() {
+        assert_eq!(parse_u8_from_slice(b"42"), Some(42));
+        assert_eq!(parse_u8_from_slice(b"0"), Some(0));
+        assert_eq!(parse_u8_from_slice(b"255"), Some(255));
+        assert_eq!(parse_u8_from_slice(b"abc"), None);
+    }
+}

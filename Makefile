@@ -71,6 +71,23 @@ test: ## Run tests inside Docker container
 		$(IMAGE_NAME) \
 		sh -c "cargo test && python -m pytest"
 
+test-local: ## Run all tests locally (without Docker)
+	@echo "$(CYAN)Running local tests...$(NC)"
+	./run_tests.sh
+
+test-rust: ## Run Rust firmware tests only
+	@echo "$(CYAN)Running Rust tests...$(NC)"
+	cd firmware/samd51_hid_injector && cargo test --lib
+
+test-python: ## Run Python unit tests only
+	@echo "$(CYAN)Running Python tests...$(NC)"
+	python3 tools/test_descriptor_unit.py
+	python3 tools/test_injection_unit.py
+
+test-coverage: ## Run tests with coverage (Rust only)
+	@echo "$(CYAN)Running tests with coverage...$(NC)"
+	cd firmware/samd51_hid_injector && cargo tarpaulin --out Html --output-dir target/coverage
+
 docker-shell: ## Open a shell inside the Docker container
 	@echo "$(CYAN)Opening Docker shell...$(NC)"
 	docker run --rm -it \

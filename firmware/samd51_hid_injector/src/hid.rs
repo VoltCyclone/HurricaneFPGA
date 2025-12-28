@@ -158,3 +158,135 @@ pub mod scancodes {
     pub const MOD_RALT: u8 = 0x40;
     pub const MOD_RGUI: u8 = 0x80;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::scancodes::*;
+
+    #[test]
+    fn test_keyboard_report_empty() {
+        let report = KeyboardReport::empty();
+        assert_eq!(report.modifier, 0);
+        assert_eq!(report.reserved, 0);
+        assert_eq!(report.keys, [0; 6]);
+        
+        let bytes = report.to_bytes();
+        assert_eq!(bytes.len(), 8);
+        assert_eq!(bytes, [0, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_keyboard_report_single_key() {
+        let report = KeyboardReport::single_key(A, 0);
+        assert_eq!(report.modifier, 0);
+        assert_eq!(report.keys[0], A);
+        assert_eq!(report.keys[1], 0);
+        
+        let bytes = report.to_bytes();
+        assert_eq!(bytes[0], 0); // modifier
+        assert_eq!(bytes[2], A); // first key
+    }
+
+    #[test]
+    fn test_keyboard_report_with_modifiers() {
+        let report = KeyboardReport::single_key(A, MOD_LSHIFT | MOD_LCTRL);
+        assert_eq!(report.modifier, MOD_LSHIFT | MOD_LCTRL);
+        assert_eq!(report.keys[0], A);
+        
+        let bytes = report.to_bytes();
+        assert_eq!(bytes[0], MOD_LSHIFT | MOD_LCTRL);
+        assert_eq!(bytes[2], A);
+    }
+
+    #[test]
+    fn test_keyboard_report_multiple_modifiers() {
+        let modifiers = MOD_LCTRL | MOD_LALT | MOD_LGUI;
+        let report = KeyboardReport::single_key(C, modifiers);
+        assert_eq!(report.modifier, modifiers);
+    }
+
+    #[test]
+    fn test_mouse_report_empty() {
+        let report = MouseReport::empty();
+        assert_eq!(report.buttons, 0);
+        assert_eq!(report.x, 0);
+        assert_eq!(report.y, 0);
+        assert_eq!(report.wheel, 0);
+        assert_eq!(report.pan, 0);
+        
+        let bytes = report.to_bytes();
+        assert_eq!(bytes.len(), 5);
+        assert_eq!(bytes, [0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_mouse_report_click() {
+        // Test left button (bit 0)
+        let report = MouseReport::click(0);
+        assert_eq!(report.buttons, 1);
+        assert_eq!(report.to_bytes()[0], 1);
+        
+        // Test right button (bit 1)
+        let report = MouseReport::click(1);
+        assert_eq!(report.buttons, 2);
+        assert_eq!(report.to_bytes()[0], 2);
+        
+        // Test middle button (bit 2)
+        let report = MouseReport::click(2);
+        assert_eq!(report.buttons, 4);
+        assert_eq!(report.to_bytes()[0], 4);
+    }
+
+    #[test]
+    fn test_mouse_report_movement() {
+        let report = MouseReport::move_to(10, -5);
+        assert_eq!(report.buttons, 0);
+        assert_eq!(report.x, 10);
+        assert_eq!(report.y, -5);
+        assert_eq!(report.wheel, 0);
+        
+        let bytes = report.to_bytes();
+        assert_eq!(bytes[0], 0); // no buttons
+        assert_eq!(bytes[1], 10); // x
+        assert_eq!(bytes[2] as i8, -5); // y
+    }
+
+    #[test]
+    fn test_mouse_report_extreme_values() {
+        let report = MouseReport::move_to(127, -127);
+        assert_eq!(report.x, 127);
+        assert_eq!(report.y, -127);
+        
+        let bytes = report.to_bytes();
+        assert_eq!(bytes[1], 127);
+        assert_eq!(bytes[2] as i8, -127);
+    }
+
+    #[test]
+    fn test_mouse_report_wheel() {
+        let mut report = MouseReport::empty();
+        report.wheel = 3;
+        
+        let bytes = report.to_bytes();
+        assert_eq!(bytes[3] as i8, 3);
+    }
+
+    #[test]
+    fn test_scancode_constants() {
+        // Verify some key scancode values
+        assert_eq!(A, 0x04);
+        assert_eq!(Z, 0x1D);
+        assert_eq!(KEY_0, 0x27);
+        assert_eq!(SPACE, 0x2C);
+        assert_eq!(ENTER, 0x28);
+    }
+
+    #[test]
+    fn test_modifier_constants() {
+        assert_eq!(MOD_LCTRL, 0x01);
+        assert_eq!(MOD_LSHIFT, 0x02);
+        assert_eq!(MOD_LALT, 0x04);
+        assert_eq!(MOD_LGUI, 0x08);
+    }
+}

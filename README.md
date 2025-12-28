@@ -320,6 +320,33 @@ cargo tarpaulin --out Html --output-dir coverage \
 open coverage/tarpaulin-report.html
 ```
 
+### Testing
+
+Comprehensive test coverage across all layers:
+
+```bash
+# Run all tests
+make test-local
+# or
+./run_tests.sh
+
+# Run individual test suites
+make test-rust      # Firmware unit tests (66 tests)
+make test-python    # Python unit tests (59 tests)
+
+# Test results
+# ✅ Rust firmware: 66/66 passed
+# ✅ Python tools:  59/59 passed
+# ✅ Total:         125 tests
+```
+
+**Test Coverage:**
+- **Firmware**: HID reports, recoil patterns, protocol parsing, state management
+- **Python Tools**: Command generation, validation, descriptor parsing
+- **HDL**: USB token generation, transaction engine, HID injector
+
+See `TESTING.md` for complete testing documentation and `TEST_COVERAGE_SUMMARY.md` for detailed coverage metrics.
+
 ---
 
 ## Troubleshooting

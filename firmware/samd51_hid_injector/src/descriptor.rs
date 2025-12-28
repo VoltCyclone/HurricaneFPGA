@@ -386,7 +386,7 @@ mod tests {
         let mut parser = DescriptorParser::new();
         parser.parse(&descriptor).unwrap();
         
-        let desc = parser.descriptor();
+        let desc = parser.into_descriptor();
         assert!(desc.is_mouse);
         assert!(!desc.is_keyboard);
     }

@@ -17,16 +17,10 @@ use usbd_serial::{SerialPort, USB_CLASS_CDC};
 use usb_device::bus::UsbBusAllocator;
 
 mod uart;
-mod protocol;
-mod hid;
-mod recoil;
-mod state;
-mod descriptor;
-mod descriptor_cache;
 
 use uart::UartInterface;
-use protocol::{CommandProcessor, CommandType};
-use descriptor_cache::DescriptorCache;
+use samd51_hid_injector::protocol::{CommandProcessor, CommandType};
+use samd51_hid_injector::descriptor_cache::DescriptorCache;
 
 #[entry]
 fn main() -> ! {
